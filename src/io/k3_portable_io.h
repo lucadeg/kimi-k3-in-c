@@ -27,7 +27,43 @@
 
 #include <fcntl.h>
 
-#if defined(__APPLE__)
+#if defined(_WIN32) || defined(_WIN64)
+
+#include <io.h>
+#include <stdio.h>
+#include <sys/types.h>
+
+#ifndef O_DIRECT
+#define O_DIRECT 0
+#endif
+
+#ifndef POSIX_FADV_WILLNEED
+#define POSIX_FADV_WILLNEED 3
+#endif
+
+#ifndef ssize_t
+typedef long long ssize_t;
+#endif
+
+static inline ssize_t pread(int fd, void *buf, size_t count, off_t offset)
+{
+    __int64 cur = _lseeki64(fd, 0, SEEK_CUR);
+    __int64 pos = _lseeki64(fd, offset, SEEK_SET);
+    if (pos == -1) return -1;
+    int r = _read(fd, buf, (unsigned int)count);
+    _lseeki64(fd, cur, SEEK_SET);
+    return (ssize_t)r;
+}
+
+static inline int posix_fadvise(int fd, off_t off, off_t len, int advice)
+{
+    (void)fd; (void)off; (void)len; (void)advice;
+    return 0;
+}
+
+static inline int k3_set_direct(int fd) { (void)fd; return 0; }
+
+#elif defined(__APPLE__)
 
 /* Not an open() flag on Darwin: defining it to 0 leaves open() semantics untouched. */
 #ifndef O_DIRECT

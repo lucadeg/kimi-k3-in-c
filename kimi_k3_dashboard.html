@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kimi K3 · Wide-Context Router · Dispatch Bench</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-canvas: #F5F5F0;
+      --bg-panel: #FFFFFF;
+      --border-color: #DCDCD4;
+      --border-hairline: #E8E8E0;
+      --text-main: #1C1E24;
+      --text-muted: #737885;
+      --text-dim: #9FA4B0;
+      
+      --accent-blue: #1D58FF;
+      --accent-blue-light: #EBF1FF;
+      --accent-green: #0E9F6E;
+      --accent-green-light: #DEF7EC;
+      --accent-red: #E02424;
+      --accent-red-light: #FDE8E8;
+      --accent-orange: #FF6B00;
+      --accent-purple: #7E3AF2;
+      --accent-teal: #0694A2;
+      
+      --maker-color: #2563EB;
+      --holding-color: #059669;
+      --rules-color: #7C3AED;
+      --buyers-color: #EA580C;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-canvas);
+      color: var(--text-main);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      line-height: 1.35;
+      -webkit-font-smoothing: antialiased;
+      padding: 12px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .dashboard-container {
+      width: 100%;
+      max-width: 1120px;
+      background: var(--bg-canvas);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    /* BORDER CARD WRAPPER */
+    .panel {
+      background: var(--bg-panel);
+      border: 1.5px solid var(--border-color);
+      border-radius: 4px;
+      padding: 10px 12px;
+      position: relative;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 8px;
+    }
+
+    .panel-title {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-main);
+    }
+
+    .panel-subtitle {
+      font-size: 9.5px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    .badge {
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 3px;
+      border: 1px solid currentColor;
+      text-transform: uppercase;
+    }
+
+    .badge-blue { color: var(--accent-blue); background: var(--accent-blue-light); border-color: rgba(29,88,255,0.3); }
+    .badge-green { color: var(--accent-green); background: var(--accent-green-light); border-color: rgba(14,159,110,0.3); }
+    .badge-red { color: var(--accent-red); background: var(--accent-red-light); border-color: rgba(224,36,36,0.3); }
+
+    /* ─────────────────────────────────────────────────────────────────────────────
+       1. TOP HEADER & METRICS BAR
+       ───────────────────────────────────────────────────────────────────────────── */
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .k-icon {
+      width: 38px;
+      height: 38px;
+      background: var(--accent-blue);
+      color: white;
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      font-weight: 800;
+      font-size: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      box-shadow: 0 2px 6px rgba(29,88,255,0.25);
+    }
+
+    .header-title-wrap h1 {
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.2px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .header-title-wrap p {
+      font-size: 9px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      margin-top: 1px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 22px;
+    }
+
+    .header-metric {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .header-metric .label {
+      font-size: 8.5px;
+      color: var(--text-muted);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .header-metric .value {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text-main);
+    }
+
+    .header-metric .value.blue { color: var(--accent-blue); }
+    .header-metric .value.green { color: var(--accent-green); }
+
+    .sparkline-box {
+      display: inline-flex;
+      align-items: flex-end;
+      gap: 1.5px;
+      height: 14px;
+      margin-left: 6px;
+    }
+
+    .spark-bar {
+      width: 2px;
+      background: var(--accent-blue);
+      border-radius: 1px;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────────
+       2. SUBHEADER STEPPER BAR
+       ───────────────────────────────────────────────────────────────────────────── */
+    .stepper-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 14px;
+      background: #EFEFEA;
+      border: 1.5px solid var(--border-color);
+      border-radius: 4px;
+      font-size: 9.5px;
+      font-weight: 700;
+    }
+
+    .stepper-summary {
+      color: var(--text-main);
+      display: flex;
+      gap: 12px;
+    }
+
+    .stepper-steps {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .step-node {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--text-muted);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+
+    .step-node.active {
+      background: var(--accent-blue);
+      color: white;
+    }
+
+    .step-arrow {
+      color: var(--text-dim);
+      font-size: 8px;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────────
+       3. TOP 3-COLUMN GRID
+       ───────────────────────────────────────────────────────────────────────────── */
+    .grid-top-3 {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr 1fr;
+      gap: 10px;
+    }
+
+    /* SKILL GAP */
+    .skill-gap-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .skill-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 9.5px;
+      font-weight: 600;
+    }
+
+    .skill-lift {
+      color: var(--accent-green);
+      font-weight: 700;
+    }
+
+    /* EXPERT QUEUE BARS */
+    .queue-bars {
+      display: flex;
+      align-items: flex-end;
+      gap: 2px;
+      height: 65px;
+      margin-top: 8px;
+      padding-bottom: 2px;
+      border-bottom: 1px solid var(--border-hairline);
+    }
+
+    .queue-bar {
+      flex: 1;
+      background: #D8D8D0;
+      border-radius: 1px 1px 0 0;
+      min-height: 4px;
+      transition: height 0.3s ease;
+    }
+
+    .queue-bar.active-expert {
+      background: var(--accent-blue);
+    }
+
+    /* SPAN COVERAGE */
+    .span-hist {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      height: 65px;
+      margin-top: 8px;
+    }
+
+    .span-col {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100%;
+      justify-content: flex-end;
+      gap: 3px;
+    }
+
+    .span-bar {
+      width: 100%;
+      background: #D5DBEA;
+      border-radius: 2px 2px 0 0;
+    }
+
+    .span-bar.high {
+      background: var(--accent-blue);
+    }
+
+    .span-lbl {
+      font-size: 7.5px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────────
+       4. TOKEN PATH (PIPELINE)
+       ───────────────────────────────────────────────────────────────────────────── */
+    .pipeline-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      margin-top: 6px;
+    }
+
+    .pipe-card {
+      border: 1px solid var(--border-color);
+      border-radius: 3px;
+      padding: 8px;
+      background: #FAFAF7;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .pipe-card.active {
+      background: var(--accent-blue);
+      border-color: var(--accent-blue);
+      color: white;
+    }
+
+    .pipe-num {
+      font-size: 8px;
+      font-weight: 700;
+      opacity: 0.7;
+    }
+
+    .pipe-name {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .pipe-desc {
+      font-size: 8px;
+      opacity: 0.8;
+    }
+
+    .token-track {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border-hairline);
+    }
+
+    .tossed-stat {
+      color: var(--accent-red);
+      font-weight: 800;
+      font-size: 12px;
+    }
+
+    .kept-stat {
+      color: var(--accent-green);
+      font-weight: 800;
+      font-size: 12px;
+    }
+
+    .track-line {
+      flex: 1;
+      height: 2px;
+      background: repeating-linear-gradient(to right, var(--accent-blue) 0, var(--accent-blue) 4px, transparent 4px, transparent 8px);
+      margin: 0 16px;
+      position: relative;
+    }
+
+    .gate-marker {
+      position: absolute;
+      top: -5px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 12px;
+      height: 12px;
+      background: var(--text-main);
+      color: white;
+      font-size: 6.5px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 2px;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────────
+       5. LARGE RELATION RING (CHORD DIAGRAM)
+       ───────────────────────────────────────────────────────────────────────────── */
+    .relation-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .chord-container {
+      width: 100%;
+      height: 380px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+    }
+
+    .chord-svg {
+      width: 100%;
+      height: 100%;
+      max-width: 580px;
+    }
+
+    .edge-log-box {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: #F8F8F4;
+      border: 1px solid var(--border-color);
+      border-radius: 3px;
+      padding: 6px 10px;
+      font-size: 8.5px;
+      color: var(--text-main);
+    }
+
+    .edge-entry {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .edge-entry .edge-dot {
+      width: 5px;
+      height: 5px;
+      background: var(--accent-blue);
+      border-radius: 1px;
+    }
+
+    .relation-ribbon {
+      display: flex;
+      justify-content: space-between;
+      background: #EAEAE4;
+      padding: 6px 10px;
+      border-radius: 3px;
+      font-size: 9px;
+      font-weight: 700;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────────
+       6. BOTTOM ROW: REPEAT BOARD & WANDER LEDGER
+       ───────────────────────────────────────────────────────────────────────────── */
+    .grid-bottom-2 {
+      display: grid;
+      grid-template-columns: 1.8fr 1fr;
+      gap: 10px;
+    }
+
+    /* 1,008 CELLS GRID */
+    .repeat-grid {
+      display: grid;
+      grid-template-columns: repeat(36, 1fr);
+      gap: 2px;
+      margin: 8px 0;
+    }
+
+    .grid-cell {
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      border-radius: 1px;
+      background: var(--accent-blue);
+    }
+
+    .grid-cell.wandered {
+      background: transparent;
+      border: 1px solid #C4C8D4;
+      border-radius: 50%;
+    }
+
+    /* WANDER LEDGER */
+    .wander-stat-wrap {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .big-red-num {
+      font-size: 28px;
+      font-weight: 900;
+      color: var(--accent-red);
+      line-height: 1;
+    }
+
+    .meter-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin: 10px 0;
+    }
+
+    .meter-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .meter-label {
+      width: 85px;
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .meter-bar-track {
+      flex: 1;
+      height: 5px;
+      background: #E8E8E0;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .meter-bar-fill {
+      height: 100%;
+      border-radius: 2px;
+    }
+
+    .meter-val {
+      font-size: 9.5px;
+      font-weight: 800;
+      width: 20px;
+      text-align: right;
+    }
+
+    .standing-file-card {
+      background: #F5F5EE;
+      border: 1px solid var(--border-color);
+      border-radius: 3px;
+      padding: 6px 8px;
+      margin-top: 8px;
+    }
+
+    .standing-file-card .title {
+      font-size: 8px;
+      color: var(--text-muted);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .standing-file-card .filename {
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--accent-blue);
+      margin-top: 2px;
+    }
+
+    /* FOOTER */
+    .footer-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: #EAEAE4;
+      border: 1.5px solid var(--border-color);
+      border-radius: 4px;
+      font-size: 9.5px;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+  </style>
+</head>
+<body>
+
+<div class="dashboard-container">
+
+  <!-- 1. TOP HEADER -->
+  <div class="panel header-bar">
+    <div class="header-left">
+      <div class="k-icon">K</div>
+      <div class="header-title-wrap">
+        <h1>Kimi K3 · Wide-Context Router</h1>
+        <p>MoE · 1.5T WEIGHTS / 38B AWAKE · 1M SPAN · SWARM MODE</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="header-metric">
+        <span class="label">TOTAL GROUPS</span>
+        <span class="value">384</span>
+      </div>
+      <div class="header-metric">
+        <span class="label">WOKEN / TOKEN</span>
+        <span class="value blue">8</span>
+      </div>
+      <div class="header-metric">
+        <span class="label">TOKENS / SEC</span>
+        <div style="display: flex; align-items: baseline;">
+          <span class="value green">103</span>
+          <div class="sparkline-box">
+            <div class="spark-bar" style="height: 6px;"></div>
+            <div class="spark-bar" style="height: 9px;"></div>
+            <div class="spark-bar" style="height: 12px;"></div>
+            <div class="spark-bar" style="height: 8px;"></div>
+            <div class="spark-bar" style="height: 14px;"></div>
+            <div class="spark-bar" style="height: 11px;"></div>
+          </div>
+        </div>
+      </div>
+      <div class="header-metric" style="align-items: flex-end;">
+        <span class="value" id="live-clock">19:10:12</span>
+        <span class="badge badge-green" style="margin-top: 2px;">TTFT 196ms</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. SUBHEADER STEPPER -->
+  <div class="stepper-bar">
+    <div class="stepper-summary">
+      <span>PASS 273</span>
+      <span>·</span>
+      <span>SPAN 1,203K</span>
+      <span>·</span>
+      <span>GUESSES 4,736</span>
+    </div>
+    <div class="stepper-steps">
+      <div class="step-node">01 SPLIT</div>
+      <span class="step-arrow">▸</span>
+      <div class="step-node">02 PICK</div>
+      <span class="step-arrow">▸</span>
+      <div class="step-node active">03 LOOK</div>
+      <span class="step-arrow">▸</span>
+      <div class="step-node">04 RUN</div>
+      <span class="step-arrow">▸</span>
+      <div class="step-node">05 GUESS</div>
+      <span class="step-arrow">▸</span>
+      <div class="step-node">06 CHECK</div>
+    </div>
+  </div>
+
+  <!-- 3. TOP 3-COLUMN GRID -->
+  <div class="grid-top-3">
+    
+    <!-- CARD 1: SKILL GAP -->
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">SKILL GAP</div>
+          <div class="panel-subtitle">WHERE K3 PULLS AHEAD OF K2</div>
+        </div>
+        <span class="badge badge-blue">+19.4 AVG LIFT</span>
+      </div>
+      <div class="skill-gap-list">
+        <div class="skill-row"><span>LONG-CTX</span><span class="skill-lift">+36</span></div>
+        <div class="skill-row"><span>AGENTIC</span><span class="skill-lift">+15</span></div>
+        <div class="skill-row"><span>CODE</span><span class="skill-lift">+29</span></div>
+        <div class="skill-row"><span>MATH</span><span class="skill-lift">+3</span></div>
+        <div class="skill-row"><span>GROUNDED</span><span class="skill-lift">+14</span></div>
+      </div>
+    </div>
+
+    <!-- CARD 2: EXPERT QUEUE -->
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">EXPERT QUEUE</div>
+          <div class="panel-subtitle">THE EIGHT THAT WON THIS TOKEN</div>
+        </div>
+        <span class="badge badge-blue">H 3.67</span>
+      </div>
+      <div class="queue-bars" id="queue-bars-container">
+        <!-- 40 ranked bars dynamically generated -->
+      </div>
+      <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 8px; color: var(--text-muted); font-weight: 700;">
+        <span>TOP-8 AWAKE</span>
+        <span>40 OF 384 GROUPS, RANKED</span>
+      </div>
+    </div>
+
+    <!-- CARD 3: SPAN COVERAGE -->
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <div class="panel-title">SPAN COVERAGE</div>
+          <div class="panel-subtitle">HOW MUCH OF THE MILLION IT OPENS</div>
+        </div>
+        <span class="badge badge-blue">OPENED 56%</span>
+      </div>
+      <div class="span-hist">
+        <div class="span-col"><div class="span-bar high" style="height: 100%;"></div><span class="span-lbl">HEAD4K</span></div>
+        <div class="span-col"><div class="span-bar" style="height: 35%;"></div><span class="span-lbl">128K</span></div>
+        <div class="span-col"><div class="span-bar" style="height: 48%;"></div><span class="span-lbl">256K</span></div>
+        <div class="span-col"><div class="span-bar" style="height: 60%;"></div><span class="span-lbl">400K</span></div>
+        <div class="span-col"><div class="span-bar" style="height: 85%;"></div><span class="span-lbl">500K</span></div>
+        <div class="span-col"><div class="span-bar" style="height: 58%;"></div><span class="span-lbl">625K</span></div>
+        <div class="span-col"><div class="span-bar" style="height: 38%;"></div><span class="span-lbl">750K</span></div>
+        <div class="span-col"><div class="span-bar high" style="height: 100%;"></div><span class="span-lbl">1M(TAIL)</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 4. TOKEN PATH PIPELINE -->
+  <div class="panel">
+    <div class="panel-header">
+      <div>
+        <span class="panel-title">TOKEN PATH</span>
+        <span style="color: var(--text-muted); margin: 0 4px;">·</span>
+        <span style="color: var(--accent-blue); font-weight: 700;">ONE ROUTE PER TOKEN</span>
+      </div>
+      <span class="badge badge-blue">STAGE 03 / 06</span>
+    </div>
+
+    <div class="pipeline-grid">
+      <div class="pipe-card">
+        <span class="pipe-num">01</span>
+        <span class="pipe-name">SPLIT</span>
+        <span class="pipe-desc">1.2M pieces</span>
+      </div>
+      <div class="pipe-card">
+        <span class="pipe-num">02</span>
+        <span class="pipe-name">PICK</span>
+        <span class="pipe-desc">384 → 8</span>
+      </div>
+      <div class="pipe-card active">
+        <span class="pipe-num">03</span>
+        <span class="pipe-name">LOOK</span>
+        <span class="pipe-desc">opened 4%</span>
+      </div>
+      <div class="pipe-card">
+        <span class="pipe-num">04</span>
+        <span class="pipe-name">RUN</span>
+        <span class="pipe-desc">38B awake</span>
+      </div>
+      <div class="pipe-card">
+        <span class="pipe-num">05</span>
+        <span class="pipe-name">GUESS</span>
+        <span class="pipe-desc">4 branches</span>
+      </div>
+      <div class="pipe-card">
+        <span class="pipe-num">06</span>
+        <span class="pipe-name">CHECK</span>
+        <span class="pipe-desc">self-verify</span>
+      </div>
+    </div>
+
+    <div class="token-track">
+      <div>
+        <span style="font-size: 8.5px; color: var(--text-muted); font-weight: 700;">TOSSED</span>
+        <div class="tossed-stat">14,208</div>
+      </div>
+      <div class="track-line">
+        <div class="gate-marker">GATE</div>
+      </div>
+      <div style="text-align: right;">
+        <span style="font-size: 8.5px; color: var(--text-muted); font-weight: 700;">KEPT + STREAMED</span>
+        <div class="kept-stat">4,736</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. LARGE RELATION RING (CHORD DIAGRAM) -->
+  <div class="panel relation-section">
+    <div class="panel-header">
+      <div>
+        <span class="panel-title">RELATION RING</span>
+        <span style="color: var(--text-muted); margin: 0 4px;">·</span>
+        <span style="color: var(--accent-blue); font-weight: 700;">SWARM FINDINGS</span>
+        <span style="color: var(--text-muted); margin: 0 4px;">·</span>
+        <span class="badge badge-red" style="font-size: 8px;">LIVE</span>
+        <div class="panel-subtitle" style="margin-top: 2px;">WHO SHARES WHAT, DRAWN STRAIGHT THROUGH THE MIDDLE</div>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <span class="badge badge-blue">PHASE 3/4 · SORT</span>
+        <span style="font-size: 9px; color: var(--text-muted); font-weight: 600;">GROUPS CLAIM THEIR ARC</span>
+      </div>
+    </div>
+
+    <!-- SVG CHORD DIAGRAM -->
+    <div class="chord-container">
+      <svg class="chord-svg" viewBox="0 0 500 500">
+        <defs>
+          <radialGradient id="ring-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#2E5BFF" stop-opacity="0.06"/>
+            <stop offset="100%" stop-color="#2E5BFF" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <!-- Background subtle circular glow -->
+        <circle cx="250" cy="250" r="220" fill="url(#ring-glow)"/>
+
+        <!-- Outer Arc 1: MAKERS (Blue) -->
+        <path d="M 250,30 A 220,220 0 0,1 470,250" fill="none" stroke="#2563EB" stroke-width="16" stroke-linecap="round"/>
+        <text x="380" y="120" fill="#2563EB" font-size="10" font-weight="800" font-family="'JetBrains Mono', monospace">MAKERS · 35</text>
+
+        <!-- Outer Arc 2: HOLDINGS (Green) -->
+        <path d="M 470,250 A 220,220 0 0,1 250,470" fill="none" stroke="#059669" stroke-width="16" stroke-linecap="round"/>
+        <text x="370" y="380" fill="#059669" font-size="10" font-weight="800" font-family="'JetBrains Mono', monospace">HOLDINGS · 35</text>
+
+        <!-- Outer Arc 3: RULES (Purple) -->
+        <path d="M 250,470 A 220,220 0 0,1 30,250" fill="none" stroke="#7C3AED" stroke-width="16" stroke-linecap="round"/>
+        <text x="80" y="380" fill="#7C3AED" font-size="10" font-weight="800" font-family="'JetBrains Mono', monospace">RULES · 33</text>
+
+        <!-- Outer Arc 4: BUYERS (Amber) -->
+        <path d="M 30,250 A 220,220 0 0,1 250,30" fill="none" stroke="#EA580C" stroke-width="16" stroke-linecap="round"/>
+        <text x="80" y="120" fill="#EA580C" font-size="10" font-weight="800" font-family="'JetBrains Mono', monospace">BUYERS · 29</text>
+
+        <!-- INTERCONNECTING CHORD BEZIER CURVES -->
+        <!-- MAKERS to HOLDINGS (Cyan/Green Chords) -->
+        <path d="M 350,70 Q 250,250 420,330" fill="none" stroke="#059669" stroke-width="1.6" opacity="0.65"/>
+        <path d="M 380,100 Q 250,250 380,400" fill="none" stroke="#2563EB" stroke-width="1.8" opacity="0.7"/>
+        <path d="M 420,150 Q 250,250 320,440" fill="none" stroke="#059669" stroke-width="1.4" opacity="0.6"/>
+        <path d="M 450,200 Q 250,250 280,460" fill="none" stroke="#2563EB" stroke-width="2.0" opacity="0.75"/>
+
+        <!-- MAKERS to BUYERS (Amber/Blue Chords) -->
+        <path d="M 310,50 Q 250,250 120,80" fill="none" stroke="#EA580C" stroke-width="1.8" opacity="0.7"/>
+        <path d="M 360,90 Q 250,250 80,130" fill="none" stroke="#2563EB" stroke-width="2.2" opacity="0.8"/>
+        <path d="M 410,140 Q 250,250 50,190" fill="none" stroke="#EA580C" stroke-width="1.5" opacity="0.65"/>
+
+        <!-- BUYERS to RULES (Amber/Purple Chords) -->
+        <path d="M 60,160 Q 250,250 80,340" fill="none" stroke="#7C3AED" stroke-width="1.8" opacity="0.7"/>
+        <path d="M 90,110 Q 250,250 140,410" fill="none" stroke="#EA580C" stroke-width="2.0" opacity="0.75"/>
+        <path d="M 140,70 Q 250,250 190,450" fill="none" stroke="#7C3AED" stroke-width="1.4" opacity="0.6"/>
+
+        <!-- RULES to HOLDINGS (Purple/Green Chords) -->
+        <path d="M 120,400 Q 250,250 370,400" fill="none" stroke="#059669" stroke-width="2.2" opacity="0.8"/>
+        <path d="M 170,440 Q 250,250 420,330" fill="none" stroke="#7C3AED" stroke-width="1.7" opacity="0.65"/>
+        <path d="M 210,460 Q 250,250 450,270" fill="none" stroke="#059669" stroke-width="1.9" opacity="0.7"/>
+
+        <!-- CROSS-SPANNED DENSE CHORD MATRIX -->
+        <path d="M 330,60 Q 250,250 100,370" fill="none" stroke="#7C3AED" stroke-width="1.5" opacity="0.6"/>
+        <path d="M 390,120 Q 250,250 70,300" fill="none" stroke="#2563EB" stroke-width="1.6" opacity="0.65"/>
+        <path d="M 440,180 Q 250,250 150,420" fill="none" stroke="#EA580C" stroke-width="1.7" opacity="0.7"/>
+        <path d="M 460,230 Q 250,250 180,450" fill="none" stroke="#059669" stroke-width="1.5" opacity="0.6"/>
+
+        <!-- Center 434 CHORDS Badge -->
+        <circle cx="250" cy="250" r="42" fill="#FFFFFF" stroke="#DCDCD4" stroke-width="2" filter="drop-shadow(0 2px 8px rgba(0,0,0,0.08))"/>
+        <text x="250" y="246" fill="#1C1E24" font-size="16" font-weight="900" text-anchor="middle" font-family="'JetBrains Mono', monospace">434</text>
+        <text x="250" y="260" fill="#737885" font-size="8" font-weight="700" text-anchor="middle" font-family="'JetBrains Mono', monospace">CHORDS</text>
+      </svg>
+    </div>
+
+    <!-- RING LINK LOG -->
+    <div class="edge-log-box">
+      <div class="edge-entry"><div class="edge-dot"></div><span>EDGE 19:10:11 buy-531 → mkr-330 · some buyer list · <b>woven</b></span></div>
+      <div class="edge-entry"><div class="edge-dot"></div><span>EDGE 19:10:10 ent-338 → mkr-840 · named in one filing · <b>woven</b></span></div>
+      <div class="edge-entry"><div class="edge-dot"></div><span>EDGE 19:10:09 hld-647 → buy-716 · linked forecast · <b>woven</b></span></div>
+      <div class="edge-entry"><div class="edge-dot"></div><span>EDGE 19:10:08 buy-766 → buy-531 · linked forecast · <b>woven</b></span></div>
+      <div class="edge-entry"><div class="edge-dot"></div><span>EDGE 19:10:08 buy-206 → hld-737 · one plant between them · <b>woven</b></span></div>
+      <div class="edge-entry"><div class="edge-dot"></div><span>EDGE 19:10:07 rul-729 → ent-428 · same parts maker · <b>woven</b></span></div>
+    </div>
+
+    <!-- RIBBON STATS -->
+    <div class="relation-ribbon">
+      <span>NODES: <b>132</b></span>
+      <span>CHORDS: <b>434</b></span>
+      <span>AGENTS: <b>300</b></span>
+      <span>TOP DEGREE: <b>13</b></span>
+      <span>DENSITY: <b>0.050</b></span>
+      <span>CROSS-GROUP: <b>194</b></span>
+    </div>
+  </div>
+
+  <!-- 6. BOTTOM ROW: REPEAT BOARD & WANDER LEDGER -->
+  <div class="grid-bottom-2">
+    
+    <!-- THE REPEAT BOARD (1,008 CELLS) -->
+    <div class="panel">
+      <div class="panel-header">
+        <div>
+          <span class="panel-title">THE REPEAT BOARD</span>
+          <span style="color: var(--text-muted); margin: 0 4px;">·</span>
+          <span style="font-size: 9.5px; color: var(--text-muted); font-weight: 600;">EVERY RERUN SINCE THE RECIPE WAS SAVED</span>
+          <span style="color: var(--text-muted); margin: 0 4px;">·</span>
+          <b>1,008 CELLS</b>
+        </div>
+        <span class="badge badge-red" style="font-size: 8px;">LIVE</span>
+      </div>
+      
+      <div style="font-size: 8px; color: var(--text-muted); font-weight: 700; margin-bottom: 4px;">
+        <span>ONE CELL = ONE RERUN</span>
+        <span style="margin: 0 6px;">|</span>
+        <span style="color: var(--accent-blue);">■ KEPT THE SHAPE</span>
+        <span style="margin: 0 6px;">|</span>
+        <span style="color: var(--text-muted);">○ WANDERED</span>
+      </div>
+
+      <!-- 1,008 Grid Cells -->
+      <div class="repeat-grid" id="repeat-grid-container">
+        <!-- 1,008 cells generated dynamically -->
+      </div>
+
+      <div style="font-size: 8px; color: var(--text-muted); font-weight: 700; margin-top: 6px;">
+        RERUN 01 EATS TWENTY MINUTES · RERUN 10 EATS THIRTY SECONDS · THE RECIPE IS ON DISK, NOT REBUILT IN YOUR HEAD
+      </div>
+    </div>
+
+    <!-- WANDER LEDGER -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">WANDER LEDGER</span>
+        <span class="badge badge-green">KEPT 70.4%</span>
+      </div>
+
+      <div style="font-size: 8.5px; color: var(--text-muted); font-weight: 700;">STOPPED BY HOUSE-RULES.MD</div>
+      <div class="wander-stat-wrap">
+        <div class="big-red-num">298</div>
+      </div>
+
+      <div class="meter-list">
+        <div class="meter-row">
+          <span class="meter-label">NO SOURCE</span>
+          <div class="meter-bar-track"><div class="meter-bar-fill" style="width: 71%; background: #EF4444;"></div></div>
+          <span class="meter-val">71</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">SILENT MERGE</span>
+          <div class="meter-bar-track"><div class="meter-bar-fill" style="width: 74%; background: #F97316;"></div></div>
+          <span class="meter-val">74</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">BEYOND SCOPE</span>
+          <div class="meter-bar-track"><div class="meter-bar-fill" style="width: 72%; background: #8B5CF6;"></div></div>
+          <span class="meter-val">72</span>
+        </div>
+        <div class="meter-row">
+          <span class="meter-label">FORM SLIP</span>
+          <div class="meter-bar-track"><div class="meter-bar-fill" style="width: 81%; background: #06B6D4;"></div></div>
+          <span class="meter-val">81</span>
+        </div>
+      </div>
+
+      <div class="standing-file-card">
+        <div class="title">THE STANDING FILE · OPENED EVERY RERUN</div>
+        <div class="filename">HOUSE-RULES.md</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- 7. FOOTER BAR -->
+  <div class="footer-bar">
+    <span>A LONG SPAN IS ROOM TO THINK IN · WHAT LASTS AFTERWARDS IS WHAT YOU SAVED</span>
+    <span>KIMI K3 · DISPATCH BENCH</span>
+  </div>
+
+</div>
+
+<script>
+  // 1. Generate Expert Queue 40 bars
+  const queueContainer = document.getElementById('queue-bars-container');
+  for (let i = 0; i < 40; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'queue-bar' + (i < 8 ? ' active-expert' : '');
+    // Progressive height
+    const heightPct = i < 8 ? (95 - i * 4) : Math.max(10, 60 - (i - 8) * 1.5 + (Math.sin(i) * 8));
+    bar.style.height = `${heightPct}%`;
+    queueContainer.appendChild(bar);
+  }
+
+  // 2. Generate 1,008 Cells for Repeat Board (36 columns x 28 rows)
+  const gridContainer = document.getElementById('repeat-grid-container');
+  const totalCells = 1008;
+  // Seeded pattern to match screenshot's dense clusters of kept blocks with scattered wander circles
+  for (let i = 0; i < totalCells; i++) {
+    const cell = document.createElement('div');
+    const isWandered = (i % 7 === 0 && i % 3 !== 0) || (i % 19 === 0) || (i > 850 && i % 5 === 0);
+    cell.className = 'grid-cell' + (isWandered ? ' wandered' : '');
+    gridContainer.appendChild(cell);
+  }
+
+  // 3. Live Clock Updater
+  function updateClock() {
+    const now = new Date();
+    const h = String(now.getHours()).padStart(2, '0');
+    const m = String(now.getMinutes()).padStart(2, '0');
+    const s = String(now.getSeconds()).padStart(2, '0');
+    document.getElementById('live-clock').innerText = `${h}:${m}:${s}`;
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+</script>
+
+</body>
+</html>
