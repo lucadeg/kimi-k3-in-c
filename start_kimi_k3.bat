@@ -4,7 +4,7 @@ set "SCRIPT_DIR=%~dp0"
 set "KIMI_PORT=8095"
 
 echo ================================================================================
-echo  [KIMI K3 IN C] Starting Local Inference Engine (Port: %KIMI_PORT%)
+echo  [KIMI/HYDRA] Starting First-Layer Verification + Heavy Router Bridge (Port: %KIMI_PORT%)
 echo ================================================================================
 
 where python >nul 2>nul

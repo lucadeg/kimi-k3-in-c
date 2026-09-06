@@ -9,6 +9,7 @@ import time
 import subprocess
 from pathlib import Path
 import urllib.request
+import json
 
 PORT = 8095
 HEALTH_URL = f"http://127.0.0.1:{PORT}/health"
@@ -19,16 +20,17 @@ def is_service_ready() -> bool:
     try:
         req = urllib.request.Request(HEALTH_URL, headers={"User-Agent": "Kimi-HealthCheck/1.0"})
         with urllib.request.urlopen(req, timeout=1.5) as resp:
-            return resp.status == 200
+            payload = json.loads(resp.read().decode("utf-8"))
+            return resp.status == 200 and payload.get("service") == "pi-kimi-compat-hydra-bridge"
     except Exception:
         return False
 
 def ensure_kimi_running():
     if is_service_ready():
-        print(f"[KIMI K3] Local Engine is active on http://127.0.0.1:{PORT}")
+        print(f"[PI/HYDRA] Kimi-compatible bridge is active on http://127.0.0.1:{PORT}")
         return True
 
-    print(f"[KIMI K3] Starting Local Inference Engine on http://127.0.0.1:{PORT}...")
+    print(f"[PI/HYDRA] Starting Kimi-compatible bridge on http://127.0.0.1:{PORT}...")
     if sys.platform == "win32":
         # Launch in background via pythonw or subprocess detached
         CREATE_NO_WINDOW = 0x08000000
@@ -52,10 +54,10 @@ def ensure_kimi_running():
     for _ in range(20):
         time.sleep(0.5)
         if is_service_ready():
-            print(f"[KIMI K3] Service successfully started and verified on http://127.0.0.1:{PORT}")
+            print(f"[PI/HYDRA] Bridge identity verified on http://127.0.0.1:{PORT}")
             return True
 
-    print("[KIMI K3] Warning: Service start timeout. Port 8095 not yet responding.")
+    print("[KIMI/HYDRA] Start timeout or incompatible process already owns port 8095.")
     return False
 
 if __name__ == "__main__":
