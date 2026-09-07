@@ -151,7 +151,7 @@ def local_first_layer_status() -> dict:
     }
 
 
-def hydra_status(timeout: float = 2.5) -> dict:
+def hydra_status(timeout: float = 0.5) -> dict:
     # This endpoint reports router capability without probing this bridge as a
     # local model, avoiding a circular Hydra -> bridge -> Hydra health check.
     url = f"{HYDRA_BASE_URL}/models/hydra-auto"

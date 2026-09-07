@@ -19,7 +19,7 @@ SERVICE_SCRIPT = CURRENT_DIR / "kimi_k3_service.py"
 def is_service_ready() -> bool:
     try:
         req = urllib.request.Request(HEALTH_URL, headers={"User-Agent": "Kimi-HealthCheck/1.0"})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
             return resp.status == 200 and payload.get("service") == "pi-kimi-compat-hydra-bridge"
     except Exception:
