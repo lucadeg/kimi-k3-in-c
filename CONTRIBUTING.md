@@ -1,5 +1,8 @@
 # Contributing
 
+Real fixes and features from outside the project are credited in
+[CONTRIBUTORS.md](CONTRIBUTORS.md).
+
 ## Before anything
 
 ```bash
@@ -8,6 +11,12 @@ make -j && make test
 
 `make test` needs no model weights and must stay green. If it is red on `main`, that is
 the bug worth fixing first.
+
+`tools/*.py` (fixture generation, reference conformance, cache replay) needs `numpy`,
+`torch`, and, for lint and the tokenizer parity check, `ruff` and `tiktoken`. Exact
+versions are pinned in `pyproject.toml`; install them however you normally manage Python
+dependencies, for example `pip install numpy==2.5.2 torch==2.13.0` and, for the dev
+group, `pip install ruff==0.16.3 tiktoken==0.13.0`.
 
 ## The standard this codebase holds itself to
 

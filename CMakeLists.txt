@@ -24,7 +24,7 @@ endif()
 
 # -march=native gives a real speedup on the expert matmuls but produces a binary tied to
 # the build machine. Off by default so a packaged build is portable.
-option(K3_NATIVE_ARCH "Optimise for the building CPU (-march=native)" OFF)
+option(K3_NATIVE_ARCH "Optimise for the building CPU (-march/-mcpu=native)" OFF)
 option(K3_SANITIZE    "Build with ASan + UBSan"                        OFF)
 
 find_package(OpenMP)
@@ -43,15 +43,15 @@ target_compile_options(k3_flags INTERFACE
   -ffp-contract=off)
 
 if(K3_NATIVE_ARCH)
-  target_compile_options(k3_flags INTERFACE -march=native)
-else()
-  # Documented baseline. The engine assumes AVX2 + FMA are available.
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+    # Apple Silicon / AArch64 uses -mcpu rather than the x86 -march spelling.
+    target_compile_options(k3_flags INTERFACE -mcpu=native)
+  else()
+    target_compile_options(k3_flags INTERFACE -march=native)
+  endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  # Documented x86 baseline. The engine assumes AVX2 + FMA are available.
   target_compile_options(k3_flags INTERFACE -mavx2 -mfma)
-endif()
-
-if(K3_SANITIZE)
-  target_compile_options(k3_flags INTERFACE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
-  target_link_options(k3_flags INTERFACE -fsanitize=address,undefined)
 endif()
 
 # --------------------------------------------------------------------------- engine --
@@ -96,9 +96,11 @@ endfunction()
 k3_add_test(test_ops    tests/unit/test_ops.c)
 k3_add_test(test_cache  tests/unit/test_cache.c)
 k3_add_test(test_st     tests/unit/test_st.c)
+k3_add_test(test_model_stream tests/unit/test_model_stream.c)
 k3_add_test(test_cfg    tests/unit/test_cfg.c)
 k3_add_test(test_tok    tests/unit/test_tok.c)
 k3_add_test(scale_test  tests/unit/scale_test.c)
+k3_add_test(test_trunk  tests/unit/test_trunk.c)
 k3_add_test(k3_model    tests/unit/k3_model.c)
 
 set(FIX ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures)
@@ -110,6 +112,7 @@ add_test(NAME ops        COMMAND test_ops   ${FIX}/ops)
 add_test(NAME cache      COMMAND test_cache ${FIX}/cache)
 add_test(NAME config     COMMAND test_cfg   fixture ${FIX}/ref_k3.json)
 add_test(NAME scale      COMMAND scale_test)
+add_test(NAME trunk      COMMAND test_trunk)
 add_test(NAME oracle     COMMAND k3_model   ${FIX})
 
 # The negative half of the config contract. Each fixture is the working flat config with
@@ -124,6 +127,10 @@ add_test(NAME config_reject_bad_topk
          COMMAND test_cfg reject ${FIX}/cfg/bad_topk.json)
 add_test(NAME safetensors COMMAND test_st   ${FIX}/st ${CMAKE_CURRENT_BINARY_DIR}/idx.json
          plain.f32.2d plain.bf16.1d tricky.f16.1d packed.u8.2d scalar.f32 second.shard.f32)
+add_test(NAME model_stream COMMAND test_model_stream ${FIX}/st)
+add_test(NAME ultra_cli_contract
+         COMMAND ${CMAKE_COMMAND} -DCLI=$<TARGET_FILE:k3_cli>
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/test_ultra_cli.cmake)
 
 # The tokenizer test needs the released vocabulary, which is not in this repository.
 # Registered UNCONDITIONALLY so ctest reports it as Skipped rather than omitting it:

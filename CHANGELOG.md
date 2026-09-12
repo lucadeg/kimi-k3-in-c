@@ -5,6 +5,64 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`--stop-id N`** (repeatable, up to 8): generation halts as soon as the model emits
+  a listed token id. Off by default, so `--gen N` still means exactly N tokens for
+  every benchmark and oracle gate. The stop id stays in the sequence, so `--save-state`
+  and a later `--load-state` continue from what the model actually produced, and the
+  check runs at emit time so a `--spec` sweep is truncated at the stop exactly like
+  serial decode. `k3_run.json` gains `"stopped_at"` (the id, or -1). Parsing is with
+  `strtol` and refuses a non-integer, a negative, or an id past the vocabulary, since a
+  stop the model can never emit is indistinguishable from a model that never emitted
+  one.
+- **Prefill on `--gen 0`**: `--gen 0 --incremental --save-state` now runs the prompt's
+  prefill and saves its exact KV and recurrent state with zero generated tokens, so a
+  shared prefix (a system prompt, a long document) can be warmed once and resumed many
+  times with `--load-state`. Previously `--gen 0` skipped the decode loop and saved
+  nothing useful.
+- **Windows support**: builds natively via MSYS2's MinGW-w64 GCC, no WSL required.
+  `make`, `make test`, and `make test-all` pass every gate unmodified, including the
+  full-model oracle and tokenizer parity (45/45) against real Kimi K3 weights.
+  `src/io/k3_portable_io.h` gained a Windows branch alongside the existing Darwin one,
+  porting `O_DIRECT` (via `FILE_FLAG_NO_BUFFERING`, intercepted at `open()` since
+  Windows -- unlike Darwin -- cannot add it to an already-open handle), `pread` (via
+  `ReadFile`'s `OVERLAPPED` offset fields, chosen specifically because it does not
+  share mutable file-pointer state across threads the way `SetFilePointerEx` +
+  `ReadFile` would), `posix_memalign` (via `_aligned_malloc`), and `getrusage`/
+  `MemAvailable` (via `GetProcessMemoryInfo`/`GlobalMemoryStatusEx`). `make asan`/
+  `make ubsan` switch to Clang on Windows (MinGW-w64's GCC package ships no sanitizer
+  runtime at all, confirmed directly rather than assumed).
+
+### Changed
+
+- **Trunk layers are read in parallel chunks.** `load_run()` streamed each layer with
+  one sequential `pread` loop, so the device saw queue depth 1. It now splits the layer
+  into 64 MiB chunks (a multiple of `K3_TRUNK_ALIGN`, so every chunk stays aligned for
+  `O_DIRECT` and `F_NOCACHE`) issued under an OpenMP parallel for, matching what the
+  expert path already does. Without OpenMP the loop still runs one chunk at a time. A
+  short read in any chunk fails the whole layer, as before, and the decoded output and
+  `trunk_bytes_read` are unchanged.
+
+### Fixed
+
+- **`k3_run.json` was not valid JSON after a run that generated nothing.** With
+  `nout == 0` the `seconds_per_token` field computed `t_total / nout` and emitted a
+  bare `inf`, so a harness driving `--gen 0 --save-state` failed on the one run it
+  needed to parse. It now reports `0`.
+- **Heap corruption on Windows** (`STATUS_HEAP_CORRUPTION`) in the trunk and expert-
+  cache arena allocators: `_aligned_malloc`, which backs the Windows `posix_memalign`
+  shim, must be freed with `_aligned_free`, not plain `free`. POSIX's `posix_memalign`
+  carries no such restriction, so this compiled cleanly and only crashed once the
+  corrupted allocator metadata was actually used, well after the allocation itself.
+  Three call sites needed the fix: `k3_cache.c`'s cache arena, and `k3_trunk.c`'s
+  trunk arena and per-layer pinned buffers.
+- **`SHARD_DIR`/`TOK_FILES` unquoted in the Makefile**: a path containing a space
+  (routine on Windows, e.g. an "AI LOCAL MODELS" folder) silently split into extra
+  argv entries instead of failing loudly, and `test_expert`/`test_real_layer`/
+  `test_tok`/`test_cfg` read whichever truncated token happened to resolve to a path,
+  rather than refusing outright.
+
 ## [1.0.0] - 2026-08-07
 
 Verified end to end on the full released checkpoint, and made substantially faster, with

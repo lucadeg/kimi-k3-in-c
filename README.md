@@ -200,7 +200,7 @@ The gate is storage: **the checkpoint is 1.56 TB.** Everything else is ordinary.
 
 | | | |
 |---|---|---|
-| **OS** | Linux, x86-64 | uses `O_DIRECT`, `posix_memalign`, `getrusage` |
+| **OS** | Linux, x86-64 (reference); macOS/arm64 and Windows/x86-64 also build and pass every gate | uses `O_DIRECT`, `posix_memalign`, `getrusage` -- ported for Windows via MSYS2's MinGW-w64 (see `src/io/k3_portable_io.h`) |
 | **CPU** | AVX2 + FMA | AVX-512 unnecessary. `make portable` targets generic AVX2 |
 | **RAM** | 8 GB and up | every preset works; more memory is faster, never different |
 | **Storage** | ~1.7 TB free | 1.56 TB checkpoint + 109 GB packed trunk, ideally on fast local disk |
@@ -404,6 +404,11 @@ printf 'La capitale de la France est' > /tmp/p.txt
 | `--trunk` | `DIR` | off | the packed trunk directory from step 5. **This is what enables streaming.** Without it the trunk loads fully resident, around 113.5 GB |
 | `--trunk-gb` | `X` | 16 | budget for pinned layers plus the streaming ring |
 | `--cache-gb` | `X` | 64 | budget for the routed-expert LRU cache |
+| `--ultra-low-memory` | none | off | stream exact embedding rows and lm_head chunks; full recompute also reuses one recurrent-state slot. Requires `--trunk` |
+
+The `ultra` preset selects `--ultra-low-memory` with a 2.5 GB trunk ring and a
+0.31 GB expert cache. It is a proof-of-life path for 8 GB-class machines, not an
+interactive-speed preset; model precision, Top-K routing and all 93 layers are unchanged.
 
 `--preset` and the two `-gb` flags set the same two numbers, so a preset is just a
 shorthand. Order matters if you mix them: a later flag wins, so
@@ -459,6 +464,10 @@ Scripts can rely on these.
 ### Worked examples
 
 ```bash
+# Full-model, one-token proof of life on an 8 GB-class ARM64 machine.
+./bin/k3 ~/k3model --trunk ~/k3trunk --preset ultra \
+         --tok ~/k3model --prompt "The capital of France is" --gen 1
+
 # Smallest possible run, the 8 GB floor.
 ./bin/k3 ~/k3model --trunk ~/k3trunk --preset laptop \
          --tok ~/k3model --prompt "Hello! My name is" --gen 16 --incremental
@@ -501,11 +510,12 @@ systemd-run --scope --user -q -p MemoryMax=8G -p MemorySwapMax=0 \
 ```console
 $ ./bin/k3 --list-presets
 presets (trunk / expert-cache, in GB):
-  laptop          3.0 / 1.0     8.2 GB peak RSS. The floor. Runs, slowly.
-  desktop        16.0 / 10.0    31.9 GB peak RSS.
-  workstation    60.0 / 30.0    95.5 GB peak RSS; the expert cache starts to matter here.
-  server        110.0 / 13.0    ~128 GB peak RSS; 90 of 93 trunk layers pinned. Fastest.
-  max           110.0 / 109.0   ~224 GB peak RSS; trunk pinned and a large expert cache.
+  ultra          2.50 / 0.31    ~3 GB planned: streamed model tables, one state slot. Slow.
+  laptop         3.00 / 1.00    8.2 GB peak RSS. The ordinary-path floor.
+  desktop       16.00 / 10.00   31.9 GB peak RSS.
+  workstation   60.00 / 30.00   95.5 GB peak RSS; the expert cache starts to matter here.
+  server       110.00 / 13.00   ~128 GB peak RSS; 90 of 93 trunk layers pinned. Fastest.
+  max          110.00 / 109.00  ~224 GB peak RSS; trunk pinned and a large expert cache.
 
 All presets stream the trunk, so they need --trunk <packed_dir>.
 Run scripts/k3-doctor.sh to see which one this machine fits.
@@ -582,8 +592,23 @@ hour in. Shorten the request, or drop `--incremental`, which carries no KV cache
 **Is the whole 1.56 TB needed?** For generation, yes. For development, no: `make test`
 needs nothing at all, and `--layers N` runs against partial shard sets.
 
-**macOS, Windows, WSL?** The engine targets Linux. The tokenizer and config reader are
-portable C99 and are built portably in CI.
+**macOS, Windows, WSL?** Linux is the reference platform. macOS/arm64 builds with plain
+`make` (see the Makefile's platform block). Windows builds natively too, via MSYS2's
+MinGW-w64 GCC (`pacman -S mingw-w64-x86_64-gcc`, then open the "MSYS2 MinGW x64" shell
+specifically -- `make`, `make test`, and `make test-all` all pass every gate unmodified,
+including the full-model oracle and tokenizer parity against real Kimi K3 weights.
+Four Linux-only calls needed porting -- `O_DIRECT`, `pread`, `posix_memalign`, and
+`getrusage` -- documented in `src/io/k3_portable_io.h`. One real bug surfaced during the
+port and is worth knowing if you extend this code on Windows: `_aligned_malloc`, which
+backs the `posix_memalign` shim, must be freed with `_aligned_free`, not plain `free`;
+POSIX's `posix_memalign` carries no such restriction, so this is easy to get wrong
+silently -- it compiles, and Windows terminates the process with `STATUS_HEAP_CORRUPTION`
+only once the corrupted allocator metadata is actually used. `make asan`/`make ubsan`
+switch to Clang on Windows (`pacman -S mingw-w64-clang-x86_64-clang
+mingw-w64-clang-x86_64-compiler-rt`): MinGW-w64's GCC package ships no sanitizer runtime
+at all, confirmed directly rather than assumed. WSL works too, unmodified, since it is
+just Linux -- the tokenizer and config reader are portable C99 either way and build
+anywhere, in CI included.
 
 ---
 

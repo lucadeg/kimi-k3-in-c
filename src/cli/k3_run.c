@@ -49,7 +49,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#else
 #include <sys/resource.h>
+#endif
 
 #include "k3.h"
 #include "k3_bind.h"
@@ -122,6 +128,27 @@ static int real_cfg(K3Cfg *c, int *fa, int fa_max,
 
 static int argmax_(const float *v, int n)
 { int b = 0; for (int i = 1; i < n; i++) if (v[i] > v[b]) b = i; return b; }
+
+static void json_string(FILE *f, const char *s)
+{
+    if (!s) { fputs("null", f); return; }
+    fputc('"', f);
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        switch (*p) {
+        case '"': fputs("\\\"", f); break;
+        case '\\': fputs("\\\\", f); break;
+        case '\b': fputs("\\b", f); break;
+        case '\f': fputs("\\f", f); break;
+        case '\n': fputs("\\n", f); break;
+        case '\r': fputs("\\r", f); break;
+        case '\t': fputs("\\t", f); break;
+        default:
+            if (*p < 0x20) fprintf(f, "\\u%04x", (unsigned)*p);
+            else fputc(*p, f);
+        }
+    }
+    fputc('"', f);
+}
 
 /* ------------------------------------------------------- conversation state ----
  * Everything the engine carries between tokens, on disk. The point is turn two of a
@@ -320,16 +347,27 @@ static void usage(FILE *f)
 "  --ids 1,2,3           raw token ids; the reproducible channel used by the tests\n"
 "\n"
 "memory:\n"
-"  --preset NAME         auto | laptop | desktop | workstation | server | max\n"
+"  --preset NAME         auto | ultra | laptop | desktop | workstation | server | max\n"
 "                        auto sizes both budgets from this machine's free RAM,\n"
 "                        trunk-first; also spelled --trunk-gb auto\n"
 "  --list-presets        show each preset's split and expected speed\n"
 "  --trunk DIR           packed trunk directory; enables streaming (see scripts/)\n"
 "  --trunk-gb X          trunk ring / pinned-layer budget\n"
 "  --cache-gb X          routed-expert cache budget\n"
+"  --ultra-low-memory    stream embedding rows and lm_head chunks, and reuse one\n"
+"                        recurrent-state slot during full recompute; needs --trunk\n"
 "\n"
 "generation:\n"
 "  --gen N               tokens to generate (default 8)\n"
+"  --stop-id N           halt after emitting token id N (repeatable, up to 8). The\n"
+"                        stop id is kept in the sequence, so --save-state and a later\n"
+"                        --load-state continue from what was actually produced.\n"
+"                        Off by default: without it --gen N means exactly N tokens,\n"
+"                        which the benchmarks and oracle gates rely on. Note the\n"
+"                        released checkpoint declares TWO end ids that disagree:\n"
+"                        config.json says 163586 (<|end_of_msg|>), tokenizer_config\n"
+"                        .json says 163585 ([EOS]), and the model emits 163585.\n"
+"                        Pass both to stop on either\n"
 "  --incremental         carry KV cache and recurrent state between tokens\n"
 "  --save-state PATH     write the carried state after the run, so the next turn of a\n"
 "                        conversation resumes instead of re-reading the whole prompt\n"
@@ -375,7 +413,12 @@ static void usage(FILE *f)
  * Measured consequence: at a fixed 128 GB budget, trunk-first runs 1.69x faster than
  * cache-first. So every preset fills the trunk before it feeds the cache.
  * docs/PERFORMANCE.md carries the data and the noise floor that bounds it. */
-typedef struct { const char *name; double trunk_gb, cache_gb; const char *note; } K3Preset;
+typedef struct {
+    const char *name;
+    double trunk_gb, cache_gb;
+    int ultra;
+    const char *note;
+} K3Preset;
 
 /* The trunk/cache figures are BUDGETS passed to the two allocators. The description
  * quotes measured peak RSS for the whole process, which is the number that decides
@@ -383,11 +426,16 @@ typedef struct { const char *name; double trunk_gb, cache_gb; const char *note; 
  * cache and scratch, none of which appear in either budget. Measured on the reference
  * machine in docs/PERFORMANCE.md; expect a little variation elsewhere. */
 static const K3Preset K3_PRESETS[] = {
-    { "laptop",      3.0,   1.0,  "8.2 GB peak RSS. The floor. Runs, slowly." },
-    { "desktop",    16.0,  10.0,  "31.9 GB peak RSS." },
-    { "workstation", 60.0, 30.0,  "95.5 GB peak RSS; the expert cache starts to matter here." },
-    { "server",     110.0, 13.0,  "~128 GB peak RSS; 90 of 93 trunk layers pinned. Fastest." },
-    { "max",        110.0,109.0,  "~224 GB peak RSS; trunk pinned and a large expert cache." },
+    { "ultra",       2.5,  0.31, 1,
+      "~3 GB planned: streamed model tables, one state slot. Slow." },
+    { "laptop",      3.0,   1.0, 0, "8.2 GB peak RSS. The ordinary-path floor." },
+    { "desktop",    16.0,  10.0, 0, "31.9 GB peak RSS." },
+    { "workstation", 60.0, 30.0, 0,
+      "95.5 GB peak RSS; the expert cache starts to matter here." },
+    { "server",     110.0, 13.0, 0,
+      "~128 GB peak RSS; 90 of 93 trunk layers pinned. Fastest." },
+    { "max",        110.0,109.0, 0,
+      "~224 GB peak RSS; trunk pinned and a large expert cache." },
 };
 enum { K3_NPRESET = (int)(sizeof K3_PRESETS / sizeof K3_PRESETS[0]) };
 
@@ -402,7 +450,7 @@ static void k3_preset_list(FILE *f)
 {
     fprintf(f, "presets (trunk / expert-cache, in GB):\n");
     for (int i = 0; i < K3_NPRESET; i++)
-        fprintf(f, "  %-12s %6.1f / %-6.1f  %s\n", K3_PRESETS[i].name,
+        fprintf(f, "  %-12s %6.2f / %-6.2f  %s\n", K3_PRESETS[i].name,
                 K3_PRESETS[i].trunk_gb, K3_PRESETS[i].cache_gb, K3_PRESETS[i].note);
     fprintf(f, "  %-12s %6s / %-6s  %s\n", "auto", "fit", "fit",
             "sizes both from this machine's free RAM, trunk-first. Recommended.");
@@ -420,6 +468,13 @@ static void k3_preset_list(FILE *f)
  * Quote this value, not the plan. */
 static double peak_rss_bytes(void)
 {
+#ifdef _WIN32
+    /* PeakWorkingSetSize is Windows' peak-RSS equivalent, already in bytes -- no
+     * kilobyte scaling needed, unlike ru_maxrss on Linux. */
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return 0.0;
+    return (double)pmc.PeakWorkingSetSize;
+#else
     struct rusage ru;
     if (getrusage(RUSAGE_SELF, &ru) != 0) return 0.0;
 #if defined(__APPLE__)
@@ -427,12 +482,23 @@ static double peak_rss_bytes(void)
 #else
     return (double)ru.ru_maxrss * 1024.0;   /* kilobytes */
 #endif
+#endif
 }
 
 /* MemAvailable, which is what the kernel thinks can actually be handed out, not
  * MemFree. Returns 0 if it cannot be read. */
 static double mem_available_bytes(void)
 {
+#ifdef _WIN32
+    /* ullAvailPhys is Windows' MemAvailable equivalent: physical memory that can
+     * actually be handed out (already accounts for the standby/modified page
+     * lists the way MemAvailable accounts for reclaimable cache), not the raw
+     * free count. */
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof ms;
+    if (!GlobalMemoryStatusEx(&ms)) return 0.0;
+    return (double)ms.ullAvailPhys;
+#else
     FILE *f = fopen("/proc/meminfo", "r");
     if (!f) return 0.0;
     char line[256];
@@ -441,12 +507,16 @@ static double mem_available_bytes(void)
         if (!strncmp(line, "MemAvailable:", 13)) { kb = atof(line + 13); break; }
     fclose(f);
     return kb * 1024.0;
+#endif
 }
 
 typedef struct {
     K3LayerBind *lay;
     K3ModelBind  mb;
+    K3ModelStream ms;
     int          n_bound;
+    int          layers_completed;
+    int          ultra;
     K3Trunk     *trunk;      /* non-NULL when the trunk is streamed rather than resident */
     /* Incremental decode state. Only MLA layers need a KV cache, so the 24 of them are
      * numbered densely rather than indexing all 93 and wasting 74% of the allocation. */
@@ -476,14 +546,27 @@ static int forward(Weights *w, const K3Cfg *c, K3Cache *cache, const int *ids, i
     const int P = c->kda_heads * c->kda_head_dim;
     const size_t kper = (size_t)P * c->kda_head_dim + (size_t)3 * P * (c->conv_k - 1);
 
-    for (int t = 0; t < T; t++)
-        k3_embed_row(h + (size_t)t * E, w->mb.embed, w->mb.wdt, ids[t], E);
+    for (int t = 0; t < T; t++) {
+        if (w->ultra) {
+            if (k3_model_stream_embed_row(&w->ms, h + (size_t)t * E, ids[t]) != 0) {
+                fprintf(stderr, "embedding row load failed for token %d at position %d\n",
+                        ids[t], t);
+                return -1;
+            }
+        } else {
+            k3_embed_row(h + (size_t)t * E, w->mb.embed, w->mb.wdt, ids[t], E);
+        }
+    }
 
     memset(br, 0, (size_t)T * maxb * E * sizeof(float));
     /* Incremental decode carries the KDA recurrent matrix and ShortConv history across
      * steps, so it must NOT be cleared here; the full-recompute path rebuilds from
      * scratch every step and must be. */
-    if (!w->kvc) memset(kstate, 0, kper * (size_t)w->n_bound * sizeof(float));
+    if (!w->kvc) {
+        const size_t slots = w->ultra ? 1u : (size_t)w->n_bound;
+        memset(kstate, 0, kper * slots * sizeof(float));
+    }
+    w->layers_completed = 0;
     int nb = 0;
     for (int L = 0; L < w->n_bound; L++) {
         /* Streaming: bring this layer in, and hint the next one so its read overlaps
@@ -505,20 +588,35 @@ static int forward(Weights *w, const K3Cfg *c, K3Cache *cache, const int *ids, i
              * the exact model keeps true routing. This is what makes a draft step cheap. */
             w->lay[L].moe.cache_only = w->draft_mode;
         }
+        /* Full recompute consumes a layer's KDA/ShortConv state only while that layer is
+         * executing over the complete sequence. Once the layer returns, no later layer
+         * can observe it, so ultra mode may clear and reuse one slot. Incremental decode
+         * still needs one persistent slot per layer and therefore never takes this
+         * path. */
+        float *layer_state = kstate + ((w->ultra && !w->kvc) ? 0 : kper * (size_t)L);
+        if (w->ultra && !w->kvc)
+            memset(layer_state, 0, kper * sizeof(float));
+        const long drops_before = k3_expert_drops;
         if (w->kvc && w->mla_slot[L] >= 0) {
             const size_t kvper = (size_t)w->kv_cap * c->n_heads * (c->qk_nope + c->v_head);
             const size_t rpper = (size_t)w->kv_cap * c->qk_rope;
             const int mi = w->mla_slot[L];
             k3_decoder_layer_inc(h, br, &nb, &w->lay[L].lay, c, L, T,
-                                 kstate + kper * (size_t)L, scratch,
+                                 layer_state, scratch,
                                  w->kvc + kvper * (size_t)mi,
                                  w->ropec + rpper * (size_t)mi,
                                  w->cached, w->kv_cap);
         } else {
             k3_decoder_layer_inc(h, br, &nb, &w->lay[L].lay, c, L, T,
-                                 kstate + kper * (size_t)L, scratch,
+                                 layer_state, scratch,
                                  NULL, NULL, 0, 0);
         }
+        if (k3_expert_drops != drops_before) {
+            fprintf(stderr, "routed expert load failed at layer %d; refusing partial "
+                            "MoE output\n", L);
+            return -1;
+        }
+        w->layers_completed = L + 1;
     }
 
     /* The model-level aggregator, beyond the two per layer. Exactly one pair exists in
@@ -540,14 +638,22 @@ static int forward(Weights *w, const K3Cfg *c, K3Cache *cache, const int *ids, i
     if (arg_all) {
         for (int t = 0; t < T; t++) {
             k3_rmsnorm(nrm, h + (size_t)t * E, w->mb.norm, E, c->rms_eps);
-            k3_mmw(logits_last, nrm, w->mb.lm_head, w->mb.wdt, E, c->vocab);
+            if (w->ultra) {
+                if (k3_model_stream_project(&w->ms, logits_last, nrm) != 0) return -1;
+            } else {
+                k3_mmw(logits_last, nrm, w->mb.lm_head, w->mb.wdt, E, c->vocab);
+            }
             arg_all[t] = argmax_(logits_last, c->vocab);
         }
         /* logits_last now holds the FINAL position's vector, same as the plain path. */
         return 0;
     }
     k3_rmsnorm(nrm, h + (size_t)(T - 1) * E, w->mb.norm, E, c->rms_eps);
-    k3_mmw(logits_last, nrm, w->mb.lm_head, w->mb.wdt, E, c->vocab);
+    if (w->ultra) {
+        if (k3_model_stream_project(&w->ms, logits_last, nrm) != 0) return -1;
+    } else {
+        k3_mmw(logits_last, nrm, w->mb.lm_head, w->mb.wdt, E, c->vocab);
+    }
     return 0;
 }
 
@@ -578,6 +684,12 @@ int main(int argc, char **argv)
     const char *prompt_text = NULL, *prompt_file = NULL, *tok_dir = NULL;
     const char *cfg_path = NULL;
     int gen = 8, want_layers = -1;
+    /* --stop-id, repeatable. Generation halts AFTER emitting a listed id, so the state
+     * written by --save-state still contains it and a later --load-state continues the
+     * sequence the model actually produced. Without this the engine always runs to
+     * --gen, which for a chat-tuned checkpoint means paying seconds per token for text
+     * past the end-of-message marker that a caller will only throw away. */
+    int stop_id[8]; int n_stop = 0, hit_stop = 0, stopped_at = -1;
     double cache_gb = 64.0, trunk_gb = 16.0;
     int budget_auto = 0;
     int spec_n = 0;
@@ -586,7 +698,7 @@ int main(int argc, char **argv)
     double draft_gb = 6.0;
     const char *load_state = NULL, *save_state = NULL;
     const char *preset_name = NULL;
-    int incremental = 0;
+    int incremental = 0, ultra = 0;
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--ids") && i + 1 < argc) ids_s = argv[++i];
         else if (!strcmp(argv[i], "--prompt") && i + 1 < argc) prompt_text = argv[++i];
@@ -594,6 +706,27 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--tok") && i + 1 < argc) tok_dir = argv[++i];
         else if (!strcmp(argv[i], "--config") && i + 1 < argc) cfg_path = argv[++i];
         else if (!strcmp(argv[i], "--gen") && i + 1 < argc) gen = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stop-id") && i + 1 < argc) {
+            if (n_stop >= (int)(sizeof stop_id / sizeof stop_id[0])) {
+                fprintf(stderr, "--stop-id given more than %d times\n",
+                        (int)(sizeof stop_id / sizeof stop_id[0]));
+                return 2;
+            }
+            /* strtol, not atoi: atoi("abc") is 0, which is a real token id, so a typo
+             * would silently arm a stop on a token the model may well emit. Refuse
+             * anything that is not entirely a non-negative integer; the range check
+             * against the vocabulary has to wait until config.json has been read. */
+            {
+                char *end;
+                const long v = strtol(argv[++i], &end, 10);
+                if (*argv[i] == '\0' || *end != '\0' || v < 0) {
+                    fprintf(stderr, "--stop-id %s: expected a non-negative token id\n",
+                            argv[i]);
+                    return 2;
+                }
+                stop_id[n_stop++] = (int)v;
+            }
+        }
         else if (!strcmp(argv[i], "--cache-gb") && i + 1 < argc) cache_gb = atof(argv[++i]);
         else if (!strcmp(argv[i], "--layers") && i + 1 < argc) want_layers = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--out") && i + 1 < argc) outp = argv[++i];
@@ -610,6 +743,7 @@ int main(int argc, char **argv)
             else { trunk_gb = atof(v); budget_auto = 0; }
         }
         else if (!strcmp(argv[i], "--incremental")) incremental = 1;
+        else if (!strcmp(argv[i], "--ultra-low-memory")) ultra = 1;
         else if (!strcmp(argv[i], "--dump-logits") && i + 1 < argc) logits_path = argv[++i];
         else if (!strcmp(argv[i], "--dump-cache-trace") && i + 1 < argc) trace_dir = argv[++i];
         else if (!strcmp(argv[i], "--preset") && i + 1 < argc && !strcmp(argv[i + 1], "auto")) {
@@ -618,6 +752,7 @@ int main(int argc, char **argv)
             i++;
             budget_auto = 1;
             preset_name = "auto";
+            ultra = 0;
         }
         else if (!strcmp(argv[i], "--preset") && i + 1 < argc) {
             const K3Preset *p = k3_preset_find(argv[++i]);
@@ -631,6 +766,7 @@ int main(int argc, char **argv)
             trunk_gb = p->trunk_gb;
             cache_gb = p->cache_gb;
             preset_name = p->name;
+            ultra = p->ultra;
         }
         else if (!strcmp(argv[i], "--list-presets")) { k3_preset_list(stdout); return 0; }
         else if (!strcmp(argv[i], "--version")) {
@@ -639,6 +775,23 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) { usage(stdout); return 0; }
         else { fprintf(stderr, "unknown option %s\n\n", argv[i]); usage(stderr); return 2; }
+    }
+
+    if (ultra && !trunk_dir) {
+        fprintf(stderr, "--ultra-low-memory needs --trunk; resident trunk cannot fit its "
+                        "memory contract\n");
+        return 2;
+    }
+    if (ultra && budget_auto) {
+        fprintf(stderr, "--ultra-low-memory uses explicit bounded budgets; use "
+                        "--preset ultra or pass --trunk-gb/--cache-gb\n");
+        return 2;
+    }
+    if (ultra && (spec_n > 0 || draft_dir)) {
+        fprintf(stderr,
+                "--ultra-low-memory does not yet support --spec or --draft-trunk; "
+                "use deterministic serial decode\n");
+        return 2;
     }
     {
         int nsrc = (ids_s != NULL) + (prompt_text != NULL) + (prompt_file != NULL);
@@ -697,6 +850,13 @@ int main(int argc, char **argv)
              * So below full residency, auto pins only while the whole process stays
              * comfortably clear of the RAM ceiling. */
             double memtotal = 0.0;
+#ifdef _WIN32
+            {
+                MEMORYSTATUSEX ms;
+                ms.dwLength = sizeof ms;
+                if (GlobalMemoryStatusEx(&ms)) memtotal = (double)ms.ullTotalPhys;
+            }
+#else
             FILE *mf = fopen("/proc/meminfo", "r");
             if (mf) {
                 char ln[256];
@@ -704,6 +864,7 @@ int main(int argc, char **argv)
                     if (!strncmp(ln, "MemTotal:", 9)) { memtotal = atof(ln + 9) * 1024.0; break; }
                 fclose(mf);
             }
+#endif
             const double rss_ceiling = memtotal > 0.0 ? 0.55 * memtotal / 1e9
                                                       : usable;   /* no /proc: keep old cap */
             double cap = rss_ceiling - reserve - cache_min;
@@ -787,6 +948,15 @@ int main(int argc, char **argv)
                         "tokens (outtok[%d])\n", gen, K3_MAX_GEN, K3_MAX_GEN);
         return 2;
     }
+    /* A stop id the model can never emit gives a run that never stops, which is
+     * indistinguishable from a model that simply did not produce one, and the two
+     * need different fixes. Refuse it here, where the vocabulary is finally known. */
+    for (int s = 0; s < n_stop; s++)
+        if (stop_id[s] >= c.vocab) {
+            fprintf(stderr, "--stop-id %d is outside the vocabulary of %d\n",
+                    stop_id[s], c.vocab);
+            return 2;
+        }
     if (np > K3_MAX_PROMPT) {
         fprintf(stderr, "prompt of %d ids exceeds the %d-id ceiling (seq[%d])\n",
                 np, K3_MAX_PROMPT, K3_MAX_PROMPT + K3_MAX_GEN);
@@ -831,7 +1001,7 @@ int main(int argc, char **argv)
     /* Echo the preset so a captured log is self-describing: a timing figure is
      * meaningless without the budget that produced it. */
     if (preset_name)
-        printf("  preset   : %s (trunk %.1f GB / expert cache %.1f GB)\n",
+        printf("  preset   : %s (trunk %.2f GB / expert cache %.2f GB)\n",
                preset_name, trunk_gb, cache_gb);
     printf("\n");
 
@@ -871,14 +1041,16 @@ int main(int argc, char **argv)
     {
         const int64_t E64 = c.hidden;
         const double w_trunk = trunk_dir ? trunk_gb * 1e9 : (double)total;
-        const double w_model = 2.0 * (double)c.vocab * E64 * 2    /* embed + lm_head, bf16 */
-                             + 3.0 * E64 * 4;                     /* norms, aggregator */
+        const double w_model = ultra
+            ? (double)K3_MODEL_STREAM_CHUNK + 2.0 * K3_ST_ALIGN + 3.0 * E64 * 4
+            : 2.0 * (double)c.vocab * E64 * 2 + 3.0 * E64 * 4;
         const double w_cache = cache_gb * 1e9;
         const int Tm = np + gen + 1;
         const int mb = c.n_layers / c.attn_res_block + 2;
         const int Pp = c.kda_heads * c.kda_head_dim;
+        const int state_layers = (ultra && !incremental) ? 1 : NL;
         const double w_state = (double)((size_t)Pp * c.kda_head_dim
-                              + (size_t)3 * Pp * (c.conv_k - 1)) * NL * 4;
+                              + (size_t)3 * Pp * (c.conv_k - 1)) * state_layers * 4;
         const double w_buf = ((double)Tm * E64 + (double)Tm * mb * E64
                               + (double)k3_layer_scratch(&c, Tm) + (double)c.vocab) * 4;
         /* The KV cache MUST be in this total: it is the only term that grows with
@@ -901,10 +1073,11 @@ int main(int argc, char **argv)
         human(w_cache, b3, sizeof b3); human(w_state, b4, sizeof b4);
         human(w_buf, b5, sizeof b5);   human(need_b, b6, sizeof b6);
         printf("\nmemory plan\n");
-        printf("  trunk %-10s %s\n  embed + lm_head  %s\n  expert cache     %s\n"
+        printf("  trunk %-10s %s\n  embed + lm_head  %s %s\n  expert cache     %s\n"
                "  recurrent state  %s\n  buffers          %s\n  KV cache         %s\n"
                "  TOTAL            %s\n",
-               trunk_dir ? "(STREAMED)" : "(resident)", b1, b2, b3, b4, b5, b7, b6);
+               trunk_dir ? "(STREAMED)" : "(resident)", b1, b2,
+               ultra ? "(STREAMED)" : "(resident)", b3, b4, b5, b7, b6);
         if (have > 0.0) {
             human(have, b1, sizeof b1);
             printf("  available        %s\n", b1);
@@ -958,9 +1131,15 @@ int main(int argc, char **argv)
     }
 
     t0 = now_s();
-    if (k3_bind_model(&st, &c, 1, &w.mb) != 0) return 1;
+    w.ultra = ultra;
+    if (k3_bind_model_parts(&st, &c, !ultra, !ultra, &w.mb) != 0) return 1;
+    if (ultra && k3_model_stream_init(&w.ms, &st, &c) != 0) return 1;
     human((double)w.mb.nbytes, b1, sizeof b1);
-    printf("embedding, final norm and lm_head: %s in %.1f s\n\n", b1, now_s() - t0);
+    if (ultra)
+        printf("final norms: %s resident; embedding and lm_head streamed in %.1f s\n\n",
+               b1, now_s() - t0);
+    else
+        printf("embedding, final norm and lm_head: %s in %.1f s\n\n", b1, now_s() - t0);
 
     K3Cache cache;
     if (k3_cache_init(&cache, &st, &c, (int64_t)(cache_gb * 1e9)) != 0) return 1;
@@ -1014,7 +1193,8 @@ int main(int argc, char **argv)
 
     float *h  = (float *)malloc((size_t)Tmax * E * sizeof(float));
     float *br = (float *)malloc((size_t)Tmax * maxb * E * sizeof(float));
-    float *ks = (float *)malloc(kper * (size_t)NL * sizeof(float));
+    const int state_layers = (ultra && !incremental) ? 1 : NL;
+    float *ks = (float *)malloc(kper * (size_t)state_layers * sizeof(float));
     size_t sc_need = k3_layer_scratch(&c, Tmax);
     {   /* the cached MLA path sizes its score buffer by cache capacity, not by T */
         const size_t ic = k3_mla_scratch_cached(&c, Tmax, Tmax, 1);
@@ -1023,8 +1203,12 @@ int main(int argc, char **argv)
     float *sc = (float *)malloc(sc_need * sizeof(float));
     float *lg = (float *)malloc((size_t)c.vocab * sizeof(float));
     if (!h || !br || !ks || !sc || !lg) { fprintf(stderr, "buffer allocation failed\n"); return 1; }
-    human((double)(kper * NL) * 4, b1, sizeof b1);
-    printf("recurrent state for %d layers: %s\n\n", NL, b1);
+    human((double)(kper * state_layers) * 4, b1, sizeof b1);
+    if (state_layers == 1 && NL > 1)
+        printf("recurrent state: one %s slot, cleared and reused across %d layers\n\n",
+               b1, NL);
+    else
+        printf("recurrent state for %d layers: %s\n\n", state_layers, b1);
 
     /* ---- generate ----
      * Heap and sized from the ACTUAL request, not from the ceiling. These were
@@ -1183,14 +1367,20 @@ int main(int argc, char **argv)
     printf("%-6s %-10s %-12s %-10s %-10s %s\n",
            "STEP", "TOKEN", "SECONDS", "CACHE HIT", "READ GB", "TOK/S");
     printf("--------------------------------------------------------------------\n");
+    k3_expert_drops = 0;
     double t_total = 0.0;
     /* Per-step cache statistics are reset each iteration so the columns below describe
      * that step alone. The end-of-run summary needs whole-run totals, so accumulate the
      * expert side here; the trunk side is already cumulative. Comparing a cumulative
      * figure against a single step would misstate the I/O share. */
     double expert_s_total = 0.0, expert_gb_total = 0.0;
-    uint64_t expert_reqs_total = 0, expert_evict_total = 0;
-    for (int g = 0; nout < gen; g++) {
+    uint64_t expert_reqs_total = 0, expert_evict_total = 0, expert_bytes_total = 0;
+    /* `nout < gen` drives generation; the `g == 0` disjunct additionally runs the
+     * incremental prefill once even when --gen 0, so the prompt's KV and recurrent
+     * state are computed and can be saved with ZERO generated tokens. That is what
+     * lets --gen 0 --save-state warm a reusable prefix (e.g. a chat system prompt)
+     * whose recurrent state is exact rather than one generated token past the end. */
+    for (int g = 0; nout < gen || (incremental && g == 0); g++) {
         k3_cache_reset_stats(&cache);
         const double ts = now_s();
         int frc;
@@ -1339,11 +1529,21 @@ int main(int argc, char **argv)
         /* Roll the per-step figures up before the next reset wipes them. */
         expert_s_total     += cache.load_seconds;
         expert_gb_total    += (double)cache.bytes_read / 1e9;
+        expert_bytes_total += cache.bytes_read;
         expert_reqs_total  += cache.hits + cache.misses;
         expert_evict_total += cache.evictions;
         for (int i = 0; i < emitn && nout < gen && T < Tmax; i++) {
             seq[T++] = emit[i];
             outtok[nout++] = emit[i];
+            /* Checked here rather than per step so a speculative sweep that verifies
+             * past a stop id is truncated at the stop, exactly like serial decode. */
+            for (int s = 0; s < n_stop; s++)
+                if (emit[i] == stop_id[s]) { hit_stop = 1; stopped_at = emit[i]; break; }
+            if (hit_stop) break;
+        }
+        if (hit_stop) {
+            printf("stop id %d reached after %d of %d tokens\n", stopped_at, nout, gen);
+            break;
         }
         if (T >= Tmax) break;
     }
@@ -1378,24 +1578,32 @@ int main(int argc, char **argv)
     }
     free(spec_snap);
     printf("--------------------------------------------------------------------\n");
-    printf("%d tokens in %.1f s, %.2f s/token average\n", nout, t_total, t_total / nout);
+    if (nout > 0)
+        printf("%d tokens in %.1f s, %.2f s/token average\n",
+               nout, t_total, t_total / nout);
+    else
+        printf("prefill only: %d positions cached, 0 tokens generated\n", w.cached);
 
     /* Decoded text, when a tokenizer is loaded. Printed as a distinct block rather than
      * streamed per token: a partially-decoded multi-byte sequence is not valid UTF-8, so
      * streaming would emit mojibake at every token boundary that splits a codepoint. */
+    char *generated_text = NULL;
     if (have_tok && nout > 0) {
-        char *txt = (char *)malloc((size_t)nout * 8 + 1);
-        if (txt) {
-            int m = tok_decode(&tok, outtok, nout, txt, nout * 8);
-            txt[m] = 0;
-            printf("\n--- generated text ---\n%s\n----------------------\n\n", txt);
-            free(txt);
+        generated_text = (char *)malloc((size_t)nout * 8 + 1);
+        if (generated_text) {
+            int m = tok_decode(&tok, outtok, nout, generated_text, nout * 8);
+            generated_text[m] = 0;
+            printf("\n--- generated text ---\n%s\n----------------------\n\n",
+                   generated_text);
         }
     }
+    const double peak_b = peak_rss_bytes();
     {
         char rb[32];
-        human(peak_rss_bytes(), rb, sizeof rb);
-        printf("PEAK RSS for the whole run: %s   <- quote this, not the plan\n\n", rb);
+        human(peak_b, rb, sizeof rb);
+        printf("PEAK RSS for the whole run: %s   <- quote this, not the plan\n", rb);
+        printf("layers completed: %d/%d; routed expert drops: %ld\n\n",
+               w.layers_completed, NL, k3_expert_drops);
     }
     k3_cache_report(&cache, "final step");
 
@@ -1407,7 +1615,22 @@ int main(int argc, char **argv)
         for (int i = 0; i < nout; i++) fprintf(f, "%s%d", i ? "," : "", outtok[i]);
         fprintf(f, "],\"full_ids\":[");
         for (int i = 0; i < T; i++) fprintf(f, "%s%d", i ? "," : "", seq[i]);
-        fprintf(f, "],\"layers\":%d,\"seconds_per_token\":%.4f}\n", NL, t_total / nout);
+        fprintf(f,
+                "],\"layers\":%d,\"layers_requested\":%d,\"layers_completed\":%d,"
+                "\"expert_drops\":%ld,\"peak_rss_bytes\":%.0f,\"wall_seconds\":%.4f,"
+                "\"seconds_per_token\":%.4f,\"expert_bytes_read\":%llu,"
+                "\"trunk_bytes_read\":%llu,\"embedding_bytes_read\":%llu,"
+                "\"lm_head_bytes_read\":%llu,\"ultra_low_memory\":%s,"
+                "\"stopped_at\":%d,"
+                "\"generated_text\":",
+                NL, NL, w.layers_completed, k3_expert_drops, peak_b, t_total,
+                nout ? t_total / nout : 0.0, (unsigned long long)expert_bytes_total,
+                (unsigned long long)(w.trunk ? w.trunk->bytes_read : 0),
+                (unsigned long long)w.ms.embed_bytes_read,
+                (unsigned long long)w.ms.lm_head_bytes_read,
+                w.ultra ? "true" : "false", stopped_at);
+        json_string(f, generated_text);
+        fputs("}\n", f);
         fclose(f);
         printf("\nwrote %s\n", outp);
     }
@@ -1429,13 +1652,15 @@ int main(int argc, char **argv)
      * separates them. */
     {
         const double trunk_s = w.trunk ? w.trunk->load_seconds : 0.0;
+        const double model_s = w.ultra ? w.ms.read_seconds : 0.0;
         /* Both terms MUST be whole-run totals over the same window. Mixing a cumulative
          * trunk time with a last-step expert time and dividing by the whole run
          * understates the expert share by roughly the token count. */
-        const double io_s = trunk_s + expert_s_total;
+        const double io_s = trunk_s + expert_s_total + model_s;
         const double share = t_total > 0 ? 100.0 * io_s / t_total : 0.0;
-        printf("I/O share of wall clock: %.1f%%  (trunk %.1f s + experts %.1f s of %.1f s)\n",
-               share, trunk_s, expert_s_total, t_total);
+        printf("I/O share of wall clock: %.1f%%  (trunk %.1f s + experts %.1f s + "
+               "model tables %.1f s of %.1f s)\n",
+               share, trunk_s, expert_s_total, model_s, t_total);
         printf("  both figures are WHOLE-RUN totals over %d steps\n", nout);
         /* Above 100% is not a bug in the arithmetic: with more than one trunk ring slot
          * the reader thread does device work while the main thread computes, so the two
@@ -1468,9 +1693,10 @@ int main(int argc, char **argv)
     k3_cache_free(&cache);
     for (int L = 0; L < w.n_bound; L++) k3_bind_free(&w.lay[L]);
     free(w.lay);
+    k3_model_stream_free(&w.ms);
     k3_bind_model_free(&w.mb);
     k3_st_close(&st);
-    free(h); free(br); free(ks); free(sc); free(lg);
+    free(h); free(br); free(ks); free(sc); free(lg); free(generated_text);
 
     /* A dropped expert means some token was computed with part of its routed sum
      * missing. The run still produced token ids and they still look plausible, which is
