@@ -1,12 +1,11 @@
+
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref, a push to a busy PR should not queue builds.
+  # Automatic triggers removed; invoke through FounderOS/Admin Gate.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
