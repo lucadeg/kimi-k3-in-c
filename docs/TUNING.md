@@ -123,6 +123,9 @@ trunk is fully resident and the floor is ~115 GB. Pack it once with
 
 **`--layers N`** binds only the first N layers. Useful for testing the machinery on a
 partial download; the output is not the full model and the engine says so.
+`scripts/download-model.sh <dest> --layers N` fetches exactly that prefix (shards
+resolved from the Hub's tensor index, sizes verified), so a 1 TB disk can still
+exercise the pipeline.
 
 ## Storage matters more than you expect
 
@@ -137,10 +140,16 @@ ceiling, not the CPU.
 
 ## Threads
 
-`OMP_NUM_THREADS` defaults to your core count. The workload is I/O bound at low memory
-budgets, so more threads help less than you would expect once the trunk is streaming.
+`k3` runs on the **physical core count** by default. Left to itself OpenMP starts one
+thread per *logical* cpu, which on an SMT part is twice the core count, and that costs
+time on this workload rather than saving it: the extra threads migrate between cores and
+lose locality on a working set far larger than any cache.
 
-This has not been swept systematically on this engine see [ROADMAP.md](ROADMAP.md).
+Override with `--threads N`, or with `OMP_NUM_THREADS`, which still takes precedence over
+the default if you set it. `--threads` wins over both.
+
+The workload is I/O bound at low memory budgets, so more threads help less than you would
+expect once the trunk is streaming.
 
 ## Before you conclude a change helped
 

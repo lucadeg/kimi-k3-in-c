@@ -10,8 +10,8 @@
 <a href="https://github.com/FareedKhan-dev/kimi-k3-in-c/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/FareedKhan-dev/kimi-k3-in-c/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License"></a>
 <a href="Makefile"><img src="https://img.shields.io/badge/C99-portable-lightgrey?style=flat-square" alt="C99"></a>
-<a href="#requirements"><img src="https://img.shields.io/badge/platform-Linux%20x86--64-lightgrey?style=flat-square" alt="Platform"></a>
-<a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.0.0-brightgreen?style=flat-square" alt="Version"></a>
+<a href="#requirements"><img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey?style=flat-square" alt="Platform"></a>
+<a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-1.1.0-brightgreen?style=flat-square" alt="Version"></a>
 </p>
 
 <table>
@@ -70,6 +70,32 @@
 
 <hr>
 
+<sub>The macOS, Windows and NEON ports, chat mode, the <code>ultra</code> preset, the faster MXFP4 kernels and a long list of parser fixes came from the people below. <a href="CONTRIBUTORS.md">Who did what</a>.</sub>
+
+<p>
+<a href="https://github.com/douglasmun"><img src="https://avatars.githubusercontent.com/u/12515041?v=4&s=96" width="48" height="48" alt="douglasmun" title="douglasmun"></a>
+<a href="https://github.com/cwwjacobs"><img src="https://avatars.githubusercontent.com/u/251295277?v=4&s=96" width="48" height="48" alt="cwwjacobs" title="cwwjacobs"></a>
+<a href="https://github.com/mahavak"><img src="https://avatars.githubusercontent.com/u/38126162?v=4&s=96" width="48" height="48" alt="mahavak" title="mahavak"></a>
+<a href="https://github.com/sulfierry"><img src="https://avatars.githubusercontent.com/u/22729945?v=4&s=96" width="48" height="48" alt="sulfierry" title="sulfierry"></a>
+<a href="https://github.com/Barba2k2"><img src="https://avatars.githubusercontent.com/u/67913962?v=4&s=96" width="48" height="48" alt="Barba2k2" title="Barba2k2"></a>
+<a href="https://github.com/ShaalanMarwan"><img src="https://avatars.githubusercontent.com/u/26276966?v=4&s=96" width="48" height="48" alt="ShaalanMarwan" title="ShaalanMarwan"></a>
+<a href="https://github.com/TROY665"><img src="https://avatars.githubusercontent.com/u/84645104?v=4&s=96" width="48" height="48" alt="TROY665" title="TROY665"></a>
+<a href="https://github.com/ysgao"><img src="https://avatars.githubusercontent.com/u/1692765?v=4&s=96" width="48" height="48" alt="ysgao" title="ysgao"></a>
+<a href="https://github.com/openchat-ai"><img src="https://avatars.githubusercontent.com/u/274358245?v=4&s=96" width="48" height="48" alt="openchat-ai" title="openchat-ai"></a>
+<a href="https://github.com/arafatsolok"><img src="https://avatars.githubusercontent.com/u/58647359?v=4&s=96" width="48" height="48" alt="arafatsolok" title="arafatsolok"></a>
+<br>
+<a href="https://github.com/genesisrevelationinc-debug"><img src="https://avatars.githubusercontent.com/u/243808510?v=4&s=96" width="48" height="48" alt="genesisrevelationinc-debug" title="genesisrevelationinc-debug"></a>
+<a href="https://github.com/AuricTW"><img src="https://avatars.githubusercontent.com/u/108772778?v=4&s=96" width="48" height="48" alt="AuricTW" title="AuricTW"></a>
+<a href="https://github.com/biokraft"><img src="https://avatars.githubusercontent.com/u/35855749?v=4&s=96" width="48" height="48" alt="biokraft" title="biokraft"></a>
+<a href="https://github.com/cablepull"><img src="https://avatars.githubusercontent.com/u/135179737?v=4&s=96" width="48" height="48" alt="cablepull" title="cablepull"></a>
+<a href="https://github.com/Avicennasis"><img src="https://avatars.githubusercontent.com/u/913872?v=4&s=96" width="48" height="48" alt="Avicennasis" title="Avicennasis"></a>
+<a href="https://github.com/Deobot2"><img src="https://avatars.githubusercontent.com/u/131834087?v=4&s=96" width="48" height="48" alt="Deobot2" title="Deobot2"></a>
+<a href="https://github.com/BlakeEvans22"><img src="https://avatars.githubusercontent.com/u/32441662?v=4&s=96" width="48" height="48" alt="BlakeEvans22" title="BlakeEvans22"></a>
+<a href="https://github.com/FermiHart"><img src="https://avatars.githubusercontent.com/u/100219585?v=4&s=96" width="48" height="48" alt="FermiHart" title="FermiHart"></a>
+<a href="https://github.com/santhoshsathish94"><img src="https://avatars.githubusercontent.com/u/11693712?v=4&s=96" width="48" height="48" alt="santhoshsathish94" title="santhoshsathish94"></a>
+<a href="https://github.com/Irfanwani"><img src="https://avatars.githubusercontent.com/u/62456735?v=4&s=96" width="48" height="48" alt="Irfanwani" title="Irfanwani"></a>
+</p>
+
 </div>
 
 <br>
@@ -86,9 +112,10 @@ $ ./bin/k3 ~/k3model --trunk ~/k3trunk --preset laptop \
 PEAK RSS for the whole run: 8.24 GB
 ```
 
-Slow, and answering correctly, in 8.24 GB, from a checkpoint of 1.56 TB. This is a base
-model, so what follows " Paris." is a continuation rather than a reply; there is no chat
-template. Give it more memory and the answer does not change, only the clock:
+Slow, and answering correctly, in 8.24 GB, from a checkpoint of 1.56 TB. This particular
+batch command deliberately asks for a raw continuation. The official Kimi K3 checkpoint
+is also chat-capable; use the XTML REPL below when you want answers and multi-turn history.
+Give the same batch request more memory and the answer does not change, only the clock:
 
 ```console
 $ ./bin/k3 ~/k3model --trunk ~/k3trunk --preset server \
@@ -188,6 +215,7 @@ component at a time.
 - [Closing the ledger](#closing-the-ledger)
 - [Documentation](#documentation)
 - [Development](#development)
+- [Star history](#star-history)
 - [License](#license)
 
 ---
@@ -201,7 +229,7 @@ The gate is storage: **the checkpoint is 1.56 TB.** Everything else is ordinary.
 | | | |
 |---|---|---|
 | **OS** | Linux, x86-64 (reference); macOS/arm64 and Windows/x86-64 also build and pass every gate | uses `O_DIRECT`, `posix_memalign`, `getrusage` -- ported for Windows via MSYS2's MinGW-w64 (see `src/io/k3_portable_io.h`) |
-| **CPU** | AVX2 + FMA | AVX-512 unnecessary. `make portable` targets generic AVX2 |
+| **CPU** | AVX2 + FMA on x86-64, NEON on arm64 | AVX-512 unnecessary. `make portable` targets generic AVX2 on x86-64 |
 | **RAM** | 8 GB and up | every preset works; more memory is faster, never different |
 | **Storage** | ~1.7 TB free | 1.56 TB checkpoint + 109 GB packed trunk, ideally on fast local disk |
 | **Toolchain** | GCC ≥ 9 or Clang ≥ 10 | GNU make, or CMake |
@@ -375,8 +403,8 @@ run, but `--help`, `--version` and `--list-presets` work without it:
 
 ### Prompt options
 
-Exactly one of these is required. Passing none, or more than one, is a usage error
-(exit 2).
+Outside `--chat`, exactly one of these is required. Passing none, or more than one, is a
+usage error (exit 2).
 
 | flag | argument | |
 |---|---|---|
@@ -404,6 +432,8 @@ printf 'La capitale de la France est' > /tmp/p.txt
 | `--trunk` | `DIR` | off | the packed trunk directory from step 5. **This is what enables streaming.** Without it the trunk loads fully resident, around 113.5 GB |
 | `--trunk-gb` | `X` | 16 | budget for pinned layers plus the streaming ring |
 | `--cache-gb` | `X` | 64 | budget for the routed-expert LRU cache |
+| `--trunk-ring` | `N` | 2 | streaming ring slots: one layer being computed on, the rest reads in flight. Each extra slot costs one slot of RAM, and the budget still wins if it does not fit |
+| `--threads` | `N` | physical cores | OpenMP threads. On Linux the default is the physical core count rather than OpenMP's one thread per logical CPU, which is slower here on SMT parts. `OMP_NUM_THREADS`, if set, is respected |
 | `--ultra-low-memory` | none | off | stream exact embedding rows and lm_head chunks; full recompute also reuses one recurrent-state slot. Requires `--trunk` |
 
 The `ultra` preset selects `--ultra-low-memory` with a 2.5 GB trunk ring and a
@@ -422,7 +452,8 @@ shorthand. Order matters if you mix them: a later flag wins, so
 
 | flag | argument | default | |
 |---|---|---|---|
-| `--gen` | `N` | 8 | tokens to generate. Ceiling 4096; prompts may be up to 32768 tokens |
+| `--gen` | `N` | 8 | tokens to generate. Ceiling 4096; prompts may be up to 32768 tokens. `--gen 0 --incremental --save-state PATH` runs only the prefill and saves its exact state, to warm a prefix once and resume it many times |
+| `--stop-id` | `N` | off | stop as soon as the model emits id `N`; repeatable, up to 8. The released checkpoint declares two end ids that disagree (163586 in `config.json`, 163585 in `tokenizer_config.json`) and emits both, so pass both |
 | `--incremental` | none | off | carry the KV cache and the recurrent state between tokens instead of re-running the whole prefix |
 | `--tok` | `DIR` | none | directory holding `tiktoken.model` and `tokenizer_config.json` |
 
@@ -430,6 +461,61 @@ shorthand. Order matters if you mix them: a later flag wins, so
 entire prefix, which is *O(T²)*; with it, step 0 pays for the prompt and every later step
 costs the same fixed amount. Both paths are gated on producing identical tokens, so this
 is a pure speed choice.
+
+### Text chat (official Kimi K3 XTML)
+
+K3 is chat-capable. `--chat` uses the official XTML segments and tokenizer control tokens;
+it does not fall back to ChatML or a handwritten generic prompt. Version one is text-only:
+there are no tools, images, server, or context compaction.
+
+```bash
+./bin/k3 ~/k3model --trunk ~/k3trunk --preset desktop --tok ~/k3model \
+  --chat --system "You are a helpful assistant." \
+  --history my-session.jsonl --incremental
+```
+
+The REPL accepts ordinary text plus `/help`, `/reset`, and `/exit`. It prints the complete
+canonical record, including `<think>…</think>` and `<response>…</response>`. When
+`--history` is supplied, it writes a portable, human-readable JSONL file such as:
+
+```json
+{"role":"system","content":"You are a helpful assistant."}
+{"role":"user","content":"Explain cache locality."}
+{"role":"assistant","content":"…","reasoning_content":"…"}
+```
+
+Treat that file as sensitive: it can contain every user message and the complete assistant
+reasoning record, which K3 requires to continue a conversation faithfully. On restart the
+engine validates, re-renders, and re-prefills the transcript; it deliberately does not
+serialize opaque KV, MLA, or KDA state. Within one session under `--incremental` the
+state a turn built is kept, and the next turn prefills only its new tail when the
+rendered transcript begins with exactly the ids that state was fed (the REPL prints how
+many positions were reused); `/reset` or any other divergence starts over. A supplied `--system` must exactly match an existing
+initial system record. Literal control-marker text in user messages is encoded as ordinary
+text, never as an XTML control token.
+
+Chat defaults to `--gen 4096` and, like batch generation, to greedy decoding. Passing any
+of `--temperature`, `--top-p` or `--seed` turns sampling on (temperature `1.0`, top-p
+`0.95` unless given); `--greedy` forces argmax even then. Sampling uses
+PCG32; `--seed N` deterministically derives one stream per assistant turn, so replaying the
+same transcript with the same seed is reproducible. The 32K prompt / 4096 generation limits
+are existing engine limits, not new chat limits; chat fails clearly and retains the history
+when either context or safe KV allocation is reached.
+
+Thinking is on by default with `thinking_effort=max`, which is exactly what the checkpoint's
+own tokenizer does when `apply_chat_template` is given nothing; `--thinking-effort low` or
+`high` changes only that setting. `--no-think` is the encoder's `thinking=False`: no
+thinking-effort system message, prior assistant turns rendered without a think channel, and
+a generation prompt that opens the response channel directly, so the model answers at once
+and the REPL prints no `<think>` block. On a streamed trunk this is the largest speed lever
+there is: in a real-checkpoint run, 119 of the 150 tokens of a five-word answer were the
+think block. Reasoning already stored in the transcript is left in place and is rendered
+again the next time the conversation runs with thinking on. Both flags are byte- and
+id-exact against the official tokenizer in `tests/unit/test_chat.c`.
+
+Chat uses the same CPU-only streamed trunk and routed-expert cache as batch mode. `--preset`,
+`--trunk-gb`, and `--cache-gb` keep exactly their existing meanings: no experts are preloaded
+and the trunk remains disk-streamed unless those existing memory flags ask otherwise.
 
 ### Diagnostic options
 
@@ -450,14 +536,16 @@ Scripts can rely on these.
 | `0` | success |
 | `1` | a tensor failed to bind, or a forward pass failed |
 | `2` | usage error, or a config that could not be read with confidence; the engine declines to guess |
+| `3` | the run finished but the `--out` file could not be written, so the results a harness reads are missing |
 | `4` | the run finished, but at least one routed expert failed to load, so the emitted ids are unsound. Distinct from `1` because the process otherwise succeeded, and it is the code that catches silent numerical corruption |
+| `5` | stopped early by Ctrl-C. The step in flight finished, and the state file, `--out` and the reports were all written, but the token list is shorter than asked for. A second Ctrl-C kills the process instead |
 
 ### Environment variables
 
 | variable | used by | |
 |---|---|---|
 | `HF_TOKEN` | `download-model.sh` | HuggingFace token, read from the environment and never echoed |
-| `OMP_NUM_THREADS` | the engine | thread count, defaulting to all cores |
+| `OMP_NUM_THREADS` | the engine | thread count. When neither this nor `--threads` is given, Linux defaults to the physical core count |
 | `K3_TOK_FILES` | tokenizer tools and CI | directory holding `tiktoken.model`, when it is not in a default location |
 | `K3_MODEL_DIR` | `tools/budget.py` | checkpoint directory, when not given as an argument |
 
@@ -538,6 +626,9 @@ Two things worth knowing before you pick:
 
 - **`max` is not faster than `server`** in these measurements. The extra 96 GB buys nothing
   outside the noise floor.
+- **A preset needs a little more free memory than its peak RSS.** The engine refuses any
+  plan above 95% of available memory, to leave room for everything outside the plan, so
+  `server` at about 128 GB needs roughly 135 GB available, not 128.
 - **Give the trunk memory before the expert cache.** At a fixed 128 GB budget that was
   worth 1.69×. [Allocation beats capacity](#allocation-beats-capacity) has the data.
 
@@ -591,6 +682,21 @@ hour in. Shorten the request, or drop `--incremental`, which carries no KV cache
 
 **Is the whole 1.56 TB needed?** For generation, yes. For development, no: `make test`
 needs nothing at all, and `--layers N` runs against partial shard sets.
+`scripts/download-model.sh <dest> --layers N` fetches only the shards those layers need,
+about 7 GB for `N=1` and 125 GB for `N=8`. That is for exercising the pipeline on a small
+disk; a layer prefix is not the model and does not produce its output.
+
+**Why no BLAS?** Because every matmul here has to give the same bits on every machine.
+The test suite checks the engine against a PyTorch reference exactly, not to a tolerance,
+and that only works if the order in which each dot product is summed is fixed and known.
+A BLAS library chooses its own blocking and reduction order, which can differ between
+versions, between vendors (OpenBLAS, MKL, Accelerate), and between thread counts on the
+same machine. Each of those answers is numerically correct and none of them matches the
+others bit for bit. The kernels in `src/core/k3_ops.c` exist to pin that order: the AVX2
+and NEON paths reproduce the scalar reduction exactly, and `test_ops` checks they do.
+It also keeps the build free of a dependency that installs differently on each
+platform, for kernels that are not the bottleneck anyway. A run is limited by how fast
+the trunk and the experts come off disk, not by arithmetic.
 
 **macOS, Windows, WSL?** Linux is the reference platform. macOS/arm64 builds with plain
 `make` (see the Makefile's platform block). Windows builds natively too, via MSYS2's
@@ -2826,8 +2932,8 @@ arithmetic and no evidence at all about output quality.
 
 **Paris.** The first token out of a 2.78 trillion parameter model running on a CPU in a few
 gigabytes of RAM is the right answer. The trailing quote and the "The Eiffel" continuation
-are not a defect: with no chat template and no instruction tuning in the loop, this is a
-base model continuing text. It has decided it is inside a JSON list of sentences about
+are not a defect: that raw-completion test supplies no XTML chat turn, so the model is
+continuing text. It has decided it is inside a JSON list of sentences about
 France, and it is continuing that list.
 
 ```text
@@ -3349,9 +3455,11 @@ Raw data: [`docs/data/trunk-quantisation.txt`](docs/data/trunk-quantisation.txt)
 
 ## Scope
 
-- **No chat template.** Base model continuations, not replies.
-- **Greedy decoding only.** No temperature, no top-p, no top-k. Greedy is what keeps the
-  output identical across budgets.
+- **Text-only XTML chat.** K3 system/user/assistant conversations and their reasoning
+  history are supported. Tools, vision/image parts, HTTP serving, and context compaction are
+  not yet supported.
+- **Batch remains greedy.** Its outputs remain identical across memory budgets. Chat alone
+  adds opt-in temperature/top-p sampling and `--greedy`.
 - **No chunked prefill.** The ceiling is 32,768 tokens, but a 21,000 token prompt is one
   quadratic pass.
 - **Context is bounded by memory, not by the engine.**
@@ -3417,6 +3525,18 @@ Fixtures are generated from the PyTorch reference and committed;
 [`tests/fixtures/README.md`](tests/fixtures/README.md) records what makes each one
 adversarial and how to regenerate it. [`CONTRIBUTING.md`](CONTRIBUTING.md) is the place to
 start.
+
+## Star history
+
+<p align="center">
+<a href="https://www.star-history.com/#FareedKhan-dev/kimi-k3-in-c&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=FareedKhan-dev/kimi-k3-in-c&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=FareedKhan-dev/kimi-k3-in-c&type=Date" />
+   <img alt="Star history of FareedKhan-dev/kimi-k3-in-c" src="https://api.star-history.com/svg?repos=FareedKhan-dev/kimi-k3-in-c&type=Date" />
+ </picture>
+</a>
+</p>
 
 ## License
 

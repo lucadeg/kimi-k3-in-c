@@ -21,14 +21,59 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "k3_st.h"
+#include "json.h"             /* model.safetensors.index.json, on the failure path only */
 
 /* ------------------------------------------------------------------ helpers */
+
+/* model.safetensors.index.json is read lazily and only to explain a miss: a clean open
+ * never pays the parse (the released index maps 497,220 names), and a directory without
+ * one still gets the filename-based triage. */
+struct K3StIndex {
+    int   tried;              /* looked for the file already                        */
+    int   explained;          /* k3_st_note_missing has printed its one paragraph   */
+    jval *root;
+    jval *map;                /* the "weight_map" object, or NULL                   */
+};
+
+static const char *base_name_(const char *p)
+{
+    const char *b = strrchr(p, '/');
+#ifdef _WIN32
+    const char *b2 = strrchr(p, '\\');
+    if (b2 && (!b || b2 > b)) b = b2;
+#endif
+    return b ? b + 1 : p;
+}
+
+/* The shard layout is model-NNNNN-of-MMMMM.safetensors. Returns 1 and the two numbers
+ * when a basename is of that form. width and twidth are the digit counts of the two
+ * fields, kept separately because they differ in the released checkpoint, whose files
+ * are model-00001-of-000096.safetensors: five digits, then six. A missing file is named
+ * with exactly the padding the present ones use, so the name can be fetched as printed. */
+static int shard_numbers(const char *base, int *idx, int *tot, int *width, int *twidth)
+{
+    const char *of = strstr(base, "-of-");
+    if (!of) return 0;
+    const char *p = of;
+    while (p > base && p[-1] >= '0' && p[-1] <= '9') p--;
+    if (p == of || p == base || p[-1] != '-') return 0;
+    char *end;
+    long i = strtol(p, &end, 10);
+    if (end != of) return 0;
+    long t = strtol(of + 4, &end, 10);
+    if (end == of + 4 || strcmp(end, ".safetensors") != 0) return 0;
+    if (i < 1 || t < 1 || i > t || t > 1000000) return 0;
+    *idx = (int)i; *tot = (int)t; *width = (int)(of - p);
+    if (twidth) *twidth = (int)(end - (of + 4));
+    return 1;
+}
 
 int k3_st_elemsize(K3Dtype d)
 {
@@ -43,8 +88,16 @@ int k3_st_elemsize(K3Dtype d)
 
 int64_t k3_st_numel(const K3Tensor *t)
 {
+    /* Saturate instead of wrap: a hostile shape near INT64_MAX used to wrap
+     * n (signed overflow) and defeat the span check below with a small
+     * matching `want`. Saturation keeps every downstream comparison honest;
+     * no real tensor has 2^62 elements. */
     int64_t n = 1;
-    for (int i = 0; i < t->ndim; i++) n *= t->shape[i];
+    for (int i = 0; i < t->ndim; i++) {
+        if (t->shape[i] < 0) return (int64_t)INT64_MAX;
+        if (n > (int64_t)INT64_MAX / (t->shape[i] > 0 ? t->shape[i] : 1)) return (int64_t)INT64_MAX;
+        n *= t->shape[i];
+    }
     return t->ndim ? n : 1;
 }
 
@@ -124,8 +177,16 @@ static int i64_(Scan *s, int64_t *v)
     int neg = 0;
     if (s->p < s->end && (*s->p == '-' || *s->p == '+')) neg = (*s->p++ == '-');
     if (s->p >= s->end || *s->p < '0' || *s->p > '9') return 0;
+    /* Saturate on overflow: hostile data_offsets/shape near INT64_MAX used
+     * to wrap `a` small (signed overflow), defeating every check below. */
     int64_t a = 0;
-    while (s->p < s->end && *s->p >= '0' && *s->p <= '9') a = a * 10 + (*s->p++ - '0');
+    while (s->p < s->end && *s->p >= '0' && *s->p <= '9') {
+        int d = *s->p++ - '0';
+        if (a > (INT64_MAX - d) / 10) { a = INT64_MAX; }
+        else { a = a * 10 + d; }
+        /* keep consuming digits so the scanner stays aligned */
+    }
+    if (neg && a == INT64_MAX) { *v = INT64_MIN; return 1; }
     *v = neg ? -a : a;
     return 1;
 }
@@ -192,6 +253,59 @@ static int push(Build *b, K3St *s, const char *name, size_t nlen, const K3Tensor
     return 0;
 }
 
+/* ------------------------------------------------------------------ span sweep */
+
+typedef struct { int64_t o0, o1; size_t idx; } Span;
+
+static int cmp_span(const void *a, const void *b)
+{
+    const Span *x = (const Span *)a, *y = (const Span *)b;
+    if (x->o0 != y->o0) return x->o0 < y->o0 ? -1 : 1;
+    if (x->o1 != y->o1) return x->o1 < y->o1 ? -1 : 1;
+    return 0;
+}
+
+/* Walk one shard's spans in offset order with a cursor from 0. Every span must start
+ * exactly where the previous one ended: a start below the cursor is an overlap, a
+ * start above it is a gap. A zero-length span (shape with a 0 in it) is legal wherever
+ * its start meets the cursor. O(n log n) for the ~5,404 tensors a real shard holds. */
+static int sweep_spans(const K3St *s, const Build *b, size_t first_idx, int64_t base,
+                       const char *path)
+{
+    const size_t n = b->n - first_idx;
+    if (n == 0) return 0;
+    Span *sp = (Span *)malloc(n * sizeof *sp);
+    if (!sp) { fprintf(stderr, "k3_st: out of memory\n"); return -1; }
+    for (size_t i = 0; i < n; i++) {
+        const K3Tensor *t = &b->t[first_idx + i];
+        sp[i].o0 = t->off - base;
+        sp[i].o1 = sp[i].o0 + t->nbytes;
+        sp[i].idx = first_idx + i;
+    }
+    qsort(sp, n, sizeof *sp, cmp_span);
+    int64_t cursor = 0;
+    size_t prev = 0;                     /* index into sp of the span that set cursor */
+    for (size_t i = 0; i < n; i++) {
+        const char *nm = s->strpool + b->noff[sp[i].idx];
+        if (sp[i].o0 < cursor) {
+            const char *pm = s->strpool + b->noff[sp[prev].idx];
+            fprintf(stderr, "k3_st: %s: %s [%lld,%lld) overlaps %s [%lld,%lld)\n",
+                    path, nm, (long long)sp[i].o0, (long long)sp[i].o1,
+                    pm, (long long)sp[prev].o0, (long long)sp[prev].o1);
+            free(sp); return -1;
+        }
+        if (sp[i].o0 > cursor) {
+            fprintf(stderr, "k3_st: %s: %lld bytes at offset %lld belong to no tensor "
+                            "(gap before %s)\n",
+                    path, (long long)(sp[i].o0 - cursor), (long long)cursor, nm);
+            free(sp); return -1;
+        }
+        if (sp[i].o1 > cursor) { cursor = sp[i].o1; prev = i; }
+    }
+    free(sp);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ one shard */
 
 static int scan_shard(K3St *s, Build *b, int shard, const char *path)
@@ -208,7 +322,12 @@ static int scan_shard(K3St *s, Build *b, int shard, const char *path)
     for (int i = 7; i >= 0; i--) hlen = (hlen << 8) | lenbuf[i];   /* little endian */
 
     off_t fsize = lseek(fd, 0, SEEK_END);
-    if (hlen == 0 || (uint64_t)fsize < 8 + hlen) {
+    /* Subtraction, not addition: 8 + hlen wraps to small when hlen is near
+     * 2^64 (a corrupt or hostile first 8 bytes), passing the check with a
+     * malloc(0) followed by a giant pread -- a heap overflow that _FORTIFY_
+     * turns into an abort. fsize >= 8 holds here (8 bytes were just read), so
+     * fsize - 8 cannot underflow. Found by tests/unit/test_st_faults.c. */
+    if (hlen == 0 || (uint64_t)(fsize - 8) < hlen) {
         fprintf(stderr, "k3_st: %s header length %llu is impossible (file %lld bytes)\n",
                 path, (unsigned long long)hlen, (long long)fsize);
         close(fd); return -1;
@@ -238,6 +357,7 @@ static int scan_shard(K3St *s, Build *b, int shard, const char *path)
     static char name[512];
     int first = 1, ntensor = 0;
     int64_t maxend = 0;
+    const size_t first_idx = b->n;       /* this shard's entries are b->t[first_idx..) */
     for (;;) {
         ws(&sc);
         if (sc.p < sc.end && *sc.p == '}') { sc.p++; break; }
@@ -316,16 +436,30 @@ static int scan_shard(K3St *s, Build *b, int shard, const char *path)
         /* Consistency: the byte span must equal elements times element size. A mismatch
          * means the shape and the data disagree, and every later read of this tensor
          * would be silently misaligned. Refuse rather than load it. */
+        /* Negative offsets used to pass through (only presence was
+         * checked), and `base + o0` / `base + o1` could wrap int64, so a
+         * hostile data_offsets pair defeated both the span check and the
+         * EOF check. Order matters: bound o0/o1 BEFORE adding base.
+         * (fsize - base cannot underflow: base <= fsize was verified at
+         * the header check above.) */
+        if (o0 < 0 || o1 < o0 || o1 > fsize - base) {
+            fprintf(stderr, "k3_st: %s: %s has impossible data_offsets\n", path, name);
+            goto bad;
+        }
         t.off    = base + o0;
         t.nbytes = o1 - o0;
-        const int64_t want = k3_st_numel(&t) * k3_st_elemsize(t.dtype);
+        /* numel * esz can still wrap even with saturating numel (a hostile
+         * shape times 4 bytes). Check before multiplying. */
+        const int64_t numel = k3_st_numel(&t);
+        const int64_t esz = k3_st_elemsize(t.dtype);
+        if (esz <= 0 || numel > INT64_MAX / esz) {
+            fprintf(stderr, "k3_st: %s: %s shape is impossibly large\n", path, name);
+            goto bad;
+        }
+        const int64_t want = numel * esz;
         if (t.nbytes != want) {
             fprintf(stderr, "k3_st: %s: %s spans %lld bytes but shape implies %lld\n",
                     path, name, (long long)t.nbytes, (long long)want);
-            goto bad;
-        }
-        if (base + o1 > fsize) {
-            fprintf(stderr, "k3_st: %s: %s ends past EOF\n", path, name);
             goto bad;
         }
         if (o1 > maxend) maxend = o1;
@@ -333,6 +467,15 @@ static int scan_shard(K3St *s, Build *b, int shard, const char *path)
         if (push(b, s, name, nlen, &t) != 0) { fprintf(stderr, "k3_st: out of memory\n"); goto bad; }
         ntensor++;
     }
+
+    /* The spans must tile the data region exactly. Each entry above was checked on its
+     * own (in range, size matches shape), but nothing so far relates them to each
+     * other: two tensors claiming one span both pass, and one of them then reads the
+     * other's bytes as plausible numbers; a span no tensor claims means the header and
+     * the file disagree about where the data is. The reference implementation sorts
+     * by data_offsets and requires each start to equal the previous end, from 0, so
+     * both are refusals there. Trailing bytes stay a note, as before. */
+    if (sweep_spans(s, b, first_idx, base, path) != 0) goto bad;
 
     if (base + maxend != fsize)
         fprintf(stderr, "k3_st: note: %s has %lld trailing bytes after the last tensor\n",
@@ -373,9 +516,25 @@ int k3_st_open(K3St *s, const char *dir)
     while ((e = readdir(d))) {
         size_t n = strlen(e->d_name);
         if (n < 12 || strcmp(e->d_name + n - 12, ".safetensors")) continue;
-        if (nf == cf) { cf = cf ? cf * 2 : 32; files = (char **)realloc(files, cf * sizeof *files); }
+        if (nf == cf) {
+            cf = cf ? cf * 2 : 32;
+            char **nfiles = (char **)realloc(files, (size_t)cf * sizeof *files);
+            if (!nfiles) {
+                fprintf(stderr, "k3_st: OOM listing %s\n", dir);
+                for (int k = 0; k < nf; k++) free(files[k]);
+                free(files); closedir(d);
+                return -1;
+            }
+            files = nfiles;
+        }
         size_t len = strlen(dir) + 1 + n + 1;
         files[nf] = (char *)malloc(len);
+        if (!files[nf]) {
+            fprintf(stderr, "k3_st: OOM listing %s\n", dir);
+            for (int k = 0; k < nf; k++) free(files[k]);
+            free(files); closedir(d);
+            return -1;
+        }
         snprintf(files[nf], len, "%s/%s", dir, e->d_name);
         nf++;
     }
@@ -388,11 +547,50 @@ int k3_st_open(K3St *s, const char *dir)
     s->path = files; s->nshard = nf;
     s->fd  = (int *)malloc(nf * sizeof(int));
     s->dfd = (int *)malloc(nf * sizeof(int));
+    s->dir = strdup(dir);
+    s->ix  = (struct K3StIndex *)calloc(1, sizeof *s->ix);
     /* k3_st_close, not free(files): s->path was aliased to `files` two lines above, so
      * freeing it here leaves s->path dangling and k3_st_close would free it a second
      * time. Let the one function that owns the teardown do all of it. */
-    if (!s->fd || !s->dfd) { k3_st_close(s); return -1; }
+    if (!s->fd || !s->dfd || !s->dir || !s->ix) { k3_st_close(s); return -1; }
     for (int i = 0; i < nf; i++) { s->fd[i] = -1; s->dfd[i] = -1; }
+
+    /* What the filenames declare. Saying "1 of 96 shards missing" here, before a single
+     * header is read, is the earliest the download script's warning ("a partial
+     * checkpoint does not fail loudly") can be made loud; the miss that follows names
+     * the file (k3_st_explain_missing). The open still succeeds: a subset directory is
+     * a legitimate thing to inspect. */
+    for (int i = 0; i < nf; i++) {
+        int idx, tot, width;
+        if (!shard_numbers(base_name_(files[i]), &idx, &tot, &width, NULL)) continue;
+        if (tot > s->declared) s->declared = tot;
+        s->numbered++;
+    }
+    if (s->declared > s->numbered) {
+        char first[128] = "";
+        int  gaps = 0;
+        for (int want = 1; want <= s->declared; want++) {
+            int here = 0;
+            for (int i = 0; i < nf && !here; i++) {
+                int idx, tot, width;
+                here = shard_numbers(base_name_(files[i]), &idx, &tot, &width, NULL) && idx == want;
+            }
+            if (here) continue;
+            if (!gaps) {
+                int width = 5, twidth = 5;
+                for (int i = 0; i < nf; i++) {
+                    int idx, tot;
+                    if (shard_numbers(base_name_(files[i]), &idx, &tot, &width, &twidth)) break;
+                }
+                snprintf(first, sizeof first, "model-%0*d-of-%0*d.safetensors",
+                         width, want, twidth, s->declared);
+            }
+            gaps++;
+        }
+        fprintf(stderr, "k3_st: note: the shard filenames in %s declare %d shards but only "
+                        "%d are here; %d missing, the first is %s\n",
+                dir, s->declared, s->numbered, gaps, first);
+    }
 
     Build b; memset(&b, 0, sizeof b);
     for (int i = 0; i < nf; i++) {
@@ -435,8 +633,132 @@ void k3_st_close(K3St *s)
     if (s->fd)  { for (int i = 0; i < s->nshard; i++) if (s->fd[i]  >= 0) close(s->fd[i]);  free(s->fd); }
     if (s->dfd) { for (int i = 0; i < s->nshard; i++) if (s->dfd[i] >= 0) close(s->dfd[i]); free(s->dfd); }
     if (s->path) { for (int i = 0; i < s->nshard; i++) free(s->path[i]); free(s->path); }
+    if (s->ix) { json_free_tree(s->ix->root); free(s->ix); }
+    free(s->dir);
     free(s->t); free(s->bucket); free(s->strpool);
     memset(s, 0, sizeof *s);
+}
+
+/* ------------------------------------------------------------------ triage */
+
+static void index_load(const K3St *s)
+{
+    struct K3StIndex *ix = s->ix;
+    if (!ix || ix->tried) return;
+    ix->tried = 1;
+    char path[4096];
+    if (snprintf(path, sizeof path, "%s/model.safetensors.index.json", s->dir) >= (int)sizeof path)
+        return;
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
+    long sz = ftell(f);
+    /* The released index is ~50 MB. Anything past 256 MB is not an index. */
+    if (sz <= 0 || sz > (256L << 20) || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return; }
+    char *txt = (char *)malloc((size_t)sz + 1);
+    if (!txt) { fclose(f); return; }
+    if (fread(txt, 1, (size_t)sz, f) != (size_t)sz) { free(txt); fclose(f); return; }
+    fclose(f);
+    txt[sz] = '\0';
+    ix->root = json_parse(txt, NULL);
+    free(txt);
+    jval *map = ix->root ? json_get(ix->root, "weight_map") : NULL;
+    if (!map || map->t != J_OBJ) {
+        fprintf(stderr, "k3_st: note: %s has no usable weight_map; ignoring it\n", path);
+        json_free_tree(ix->root); ix->root = NULL;
+        return;
+    }
+    ix->map = map;
+}
+
+/* The shard basename the index declares for name: NULL when there is no index or the
+ * name is not listed (*listed tells the two apart). One linear pass over the map: this
+ * runs once, on the failure path. */
+static const char *index_shard(const K3St *s, const char *name, int *listed)
+{
+    *listed = 0;
+    index_load(s);
+    if (!s->ix || !s->ix->map) return NULL;
+    jval *v = json_get(s->ix->map, name);
+    if (!v) return NULL;
+    *listed = 1;
+    return v->t == J_STR ? v->str : NULL;
+}
+
+K3StMiss k3_st_explain_missing(const K3St *s, const char *name, char *buf, size_t cap)
+{
+    int listed = 0;
+    const char *auth = index_shard(s, name, &listed);
+    const int have_index = s->ix && s->ix->map;
+    char count[96];
+    if (s->declared > 0)
+        snprintf(count, sizeof count, "%d of %d declared shards are here", s->numbered, s->declared);
+    else
+        snprintf(count, sizeof count, "%d shard file(s) here, none numbered -of-", s->nshard);
+
+    if (auth) {
+        int present = 0;
+        for (int i = 0; i < s->nshard && !present; i++)
+            present = !strcmp(base_name_(s->path[i]), auth);
+        if (!present) {
+            snprintf(buf, cap, "model.safetensors.index.json puts it in %s, which is not in "
+                     "%s (%s): the download is incomplete; fetch that file", auth, s->dir, count);
+            return K3_ST_MISS_SHARD_ABSENT;
+        }
+        snprintf(buf, cap, "model.safetensors.index.json puts it in %s, which is here but "
+                 "whose header does not declare it: that file is not the one the index "
+                 "describes (truncated, or from another revision); re-fetch it", auth);
+        return K3_ST_MISS_SHARD_MISMATCH;
+    }
+    if (have_index) {
+        snprintf(buf, cap, "model.safetensors.index.json does not list it (%s): this "
+                 "checkpoint never had a tensor by that name, so the engine and the "
+                 "checkpoint disagree, not the download", count);
+        return K3_ST_MISS_NOT_IN_CHECKPOINT;
+    }
+    if (s->declared > s->numbered) {
+        /* No index: name the absent files from the numbering instead. */
+        int width = 5, twidth = 5, n = 0;
+        for (int i = 0; i < s->nshard; i++) {
+            int idx, tot;
+            if (shard_numbers(base_name_(s->path[i]), &idx, &tot, &width, &twidth)) break;
+        }
+        int w = snprintf(buf, cap, "no model.safetensors.index.json here; the filenames "
+                         "declare %d shards and %d are here, missing:", s->declared, s->numbered);
+        for (int want = 1; want <= s->declared && w >= 0 && (size_t)w < cap; want++) {
+            int here = 0;
+            for (int i = 0; i < s->nshard && !here; i++) {
+                int idx, tot, wd;
+                here = shard_numbers(base_name_(s->path[i]), &idx, &tot, &wd, NULL) && idx == want;
+            }
+            if (here) continue;
+            if (n < 4)
+                w += snprintf(buf + w, cap - (size_t)w, " model-%0*d-of-%0*d.safetensors",
+                              width, want, twidth, s->declared);
+            else if (n == 4)
+                w += snprintf(buf + w, cap - (size_t)w, " ...");
+            n++;
+        }
+        if (w >= 0 && (size_t)w < cap)
+            snprintf(buf + w, cap - (size_t)w, " (%d file%s); the tensor is in one of them",
+                     n, n == 1 ? "" : "s");
+        return K3_ST_MISS_SHARD_ABSENT;
+    }
+    snprintf(buf, cap, "no model.safetensors.index.json here, and %s, so every file a full "
+             "download would have is present: this checkpoint has no tensor by that name",
+             count);
+    return K3_ST_MISS_NOT_IN_CHECKPOINT;
+}
+
+void k3_st_note_missing(const K3St *s, const char *name)
+{
+    if (!s->ix || s->ix->explained) return;
+    s->ix->explained = 1;
+    char why[1024];
+    k3_st_explain_missing(s, name, why, sizeof why);
+    fprintf(stderr, "k3_st: %s is missing: %s\n"
+                    "       (later misses in this run are reported by name only; they share this cause)\n",
+            name, why);
 }
 
 const K3Tensor *k3_st_find(const K3St *s, const char *name)

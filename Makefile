@@ -115,6 +115,7 @@ else
   endif
   OMP_CFLAGS ?= -fopenmp
   OMP_LDFLAGS ?= -fopenmp
+  ASAN_RUN_OPTIONS ?= detect_leaks=1:halt_on_error=1
 endif
 
 # Linux and macOS: the platform's own CC already has a working sanitizer runtime, so
@@ -141,7 +142,7 @@ LDFLAGS  ?= -lm $(OMP_LDFLAGS) -pthread
 # Flat include search across the module dirs: sources use "k3.h", "k3_cache.h" etc
 # rather than path-qualified includes, which keeps them relocatable.
 INCLUDES := -Iinclude -Iinclude/k3 -Ithird_party \
-            -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer
+            -Isrc/core -Isrc/io -Isrc/cache -Isrc/model -Isrc/tokenizer -Isrc/chat
 
 # ----------------------------------------------------------------------------- files --
 ENGINE_SRC := src/core/k3_ops.c \
@@ -150,11 +151,12 @@ ENGINE_SRC := src/core/k3_ops.c \
               src/model/k3_bind.c
 ENGINE_OBJ := $(patsubst %.c,$(BUILD)/%.o,$(ENGINE_SRC))
 
-CLI_SRC    := src/cli/k3_run.c
+CLI_SRC    := src/cli/k3_run.c src/cli/k3_state.c
+CHAT_SRC   := src/chat/k3_chat.c src/chat/k3_sampler.c
 CLI_BIN    := $(BIN)/k3
 
 # Tests that need no checkpoint. These run in CI on every push.
-UNIT_TESTS := test_ops test_cache test_st test_model_stream test_cfg test_tok scale_test k3_model test_trunk
+UNIT_TESTS := test_ops test_cache test_st test_model_stream test_cfg test_tok test_chat test_sampler scale_test k3_model test_trunk test_st_faults test_sysmem test_prefix test_state test_cancel test_json
 # Tests that need real shards. Built and run by `make test-all` with SHARD_DIR set;
 # see the weights-test target below.
 WEIGHT_TESTS := test_expert test_real_layer
@@ -178,8 +180,8 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 
-$(CLI_BIN): $(CLI_SRC) $(ENGINE_OBJ) | $(BIN)
-	$(CC) $(CFLAGS) $(INCLUDES) $(CLI_SRC) $(ENGINE_OBJ) -o $@ $(LDFLAGS)
+$(CLI_BIN): $(CLI_SRC) $(CHAT_SRC) $(ENGINE_OBJ) | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $(CLI_SRC) $(CHAT_SRC) $(ENGINE_OBJ) -o $@ $(LDFLAGS)
 
 $(BIN):
 	@mkdir -p $(BIN)
@@ -200,13 +202,38 @@ $(BIN)/test_model_stream: tests/unit/test_model_stream.c $(BUILD)/src/model/k3_b
                           $(BUILD)/src/io/k3_st.o $(BUILD)/src/core/k3_ops.o | $(BIN)
 	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
 
+$(BIN)/test_st_faults: tests/unit/test_st_faults.c $(BUILD)/src/io/k3_st.o | $(BIN)
+	$(CC) $(CFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
 # The tokenizer and config reader are portable C99 with no OpenMP and no platform calls,
 # so they build and are verifiable on any machine, including one with no checkpoint.
 $(BIN)/test_tok: tests/unit/test_tok.c | $(BIN)
 	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $< -o $@
 
+$(BIN)/test_chat: tests/unit/test_chat.c src/chat/k3_chat.c src/chat/k3_sampler.c | $(BIN)
+	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) $^ -o $@ $(LDFLAGS)
+$(BIN)/test_sampler: tests/unit/test_sampler.c src/chat/k3_sampler.c | $(BIN)
+	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) $^ -o $@ $(LDFLAGS)
+
+$(BIN)/test_json: tests/unit/test_json.c | $(BIN)
+	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $< -o $@ -lm
+
 $(BIN)/test_cfg: tests/unit/test_cfg.c src/core/k3_ops.c | $(BIN)
 	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $^ -o $@ -lm
+
+# Signal handling only; no OpenMP, no platform calls beyond signal() and write().
+$(BIN)/test_cancel: tests/unit/test_cancel.c src/cli/k3_cancel.h | $(BIN)
+	$(CC) -O2 -std=gnu99 $(WARN) $(INCLUDES) -Isrc/cli $< -o $@
+# The state file format is plain stdio over arrays; no OpenMP, no platform calls.
+$(BIN)/test_state: tests/unit/test_state.c src/cli/k3_state.c | $(BIN)
+	$(CC) -O2 -std=gnu99 $(WARN) $(INCLUDES) -Isrc/cli $^ -o $@ -lm
+# The prefix record is a header of pure C99 with no engine dependency; the engine-level
+# equivalence it relies on is GATE 3b of k3_model.
+$(BIN)/test_prefix: tests/unit/test_prefix.c src/chat/k3_prefix.h | $(BIN)
+	$(CC) -O2 -std=c99 $(WARN) -Wno-unused-function $(INCLUDES) $< -o $@
+# The memory probe is one platform call per OS and nothing else; built the same way.
+$(BIN)/test_sysmem: tests/unit/test_sysmem.c src/cli/k3_sysmem.h | $(BIN)
+	$(CC) -O2 -std=gnu99 $(WARN) $(INCLUDES) -Isrc/cli $< -o $@
 
 # Allocates at REAL model widths (a ~1.8 GB KDA layer), so it needs the optimised build
 # rather than the portable C99 one the tokenizer and config tests use.
@@ -245,12 +272,53 @@ test: $(CLI_BIN) $(TEST_BINS)
 	             echo "  pass on the loader's error and prove nothing"; exit 1;; \
 	      esac; \
 	  done; echo "  3 malformed stop lists refused, each for the right reason"
+	@echo "== numeric CLI contract =="; \
+	  for bad in "--ids 4294967296" "--ids 9999999999999999999999" "--layers 1junk" "--layers 9999999999999999999999" "--threads 8x" "--threads 0"; do \
+	      out=$$(./$(CLI_BIN) $(FIXTURES)/st --config $(FIXTURES)/cfg/flat.json $$bad 2>&1); rc=$$?; \
+	      test $$rc -eq 2 || { echo "  k3 $$bad returned $$rc, expected 2"; exit 1; }; \
+	      case "$$out" in *--ids*|*--layers*|*--threads*) ;; \
+	          *) echo "  '$$bad' was refused, but not because of its number:"; \
+	             echo "      $$out"; \
+	             echo "  asserting only the exit code would pass on the loader's error"; exit 1;; \
+	      esac; \
+	  done; echo "  6 malformed numerics refused, each for the right reason"
+	@echo "== partial download contract =="; \
+	  if ! command -v $(PYTHON) >/dev/null 2>&1; then \
+	      echo "  NOT RUN: no $(PYTHON) on PATH. tools/layers_to_shards.py backs"; \
+	      echo "           download-model.sh --layers; the engine itself needs no Python."; \
+	  else \
+	  out=$$($(PYTHON) tools/layers_to_shards.py $(FIXTURES)/partial_index.json --layers 1); \
+	  exp=$$(printf 'model-00001-of-00005.safetensors\nmodel-00002-of-00005.safetensors\nmodel-00005-of-00005.safetensors'); \
+	  test "$$out" = "$$exp" || { echo "  --layers 1 mapped to:"; echo "      $$out"; exit 1; }; \
+	  out=$$($(PYTHON) tools/layers_to_shards.py $(FIXTURES)/partial_index.json --layers 2); \
+	  case "$$out" in *"model-00003-of-00005.safetensors"*) ;; \
+	      *) echo "  --layers 2 missed the shard holding half of layer 1:"; \
+	         echo "      $$out"; exit 1;; \
+	  esac; \
+	  case "$$out" in *"model-00004-of-00005.safetensors"*) \
+	      echo "  --layers 2 pulled the shard holding only a far-future layer:"; \
+	      echo "      $$out"; exit 1;; \
+	  esac; \
+	  for bad in "--layers 0" "--layers 9" "--layers abc" "--layers 1junk"; do \
+	      $(PYTHON) tools/layers_to_shards.py $(FIXTURES)/partial_index.json $$bad >/dev/null 2>&1; \
+	      rc=$$?; test $$rc -eq 2 || { echo "  '$$bad' returned $$rc, expected 2"; exit 1; }; \
+	  done; \
+	  $(PYTHON) tools/layers_to_shards.py $(FIXTURES)/partial_index_nomap.json --layers 1 >/dev/null 2>&1; \
+	  rc=$$?; test $$rc -eq 2 || { echo "  index without a weight_map returned $$rc, expected 2"; exit 1; }; \
+	  echo "  2 prefix maps exact, 5 malformed inputs refused with exit 2"; \
+	  fi
 	@echo "== op kernels ==";        ./$(BIN)/test_ops $(FIXTURES)/ops
 	@echo "== streaming cache ==";   ./$(BIN)/test_cache $(FIXTURES)/cache
+	@echo "== streaming cache, split reads =="; K3_EXPERT_CHUNK=4096 ./$(BIN)/test_cache $(FIXTURES)/cache
 	@echo "== safetensors ==";       ./$(BIN)/test_st $(FIXTURES)/st $(BUILD)/st_index.json \
 	    plain.f32.2d plain.bf16.1d tricky.f16.1d packed.u8.2d scalar.f32 second.shard.f32
 	@echo "== model streaming ==";   ./$(BIN)/test_model_stream $(FIXTURES)/st
+	@echo "== shard faults ==";     ./$(BIN)/test_st_faults $(FIXTURES)/st $(BUILD)/stfault
+	@echo "== json refusals ==";    ./$(BIN)/test_json
+	@echo "== state file ==";       ./$(BIN)/test_state $(BUILD)/state
 	@echo "== config reader ==";     ./$(BIN)/test_cfg fixture $(FIXTURES)/ref_k3.json
+	@echo "== interrupt contract =="; ./$(BIN)/test_cancel
+	@echo "== memory probe ==";     ./$(BIN)/test_sysmem
 	@echo "== config refusals =="; \
 	  for f in no_layermap bad_layer_index bad_topk; do \
 	      ./$(BIN)/test_cfg reject $(FIXTURES)/cfg/$$f.json || exit 1; \
@@ -260,9 +328,29 @@ test: $(CLI_BIN) $(TEST_BINS)
 	      ./$(BIN)/test_tok "$(TOK_FILES)" roundtrip src/core/k3_ops.c; \
 	  else \
 	      echo "  NOT RUN: no tiktoken.model at $(TOK_FILES)"; \
-	      echo "           the vocabulary ships with the checkpoint, not with this"; \
-	      echo "           repository. Run: make tok TOK_FILES=/path/to/k3model"; \
+	          echo "           the vocabulary ships with the checkpoint, not with this"; \
+	          echo "           repository. Run: make tok TOK_FILES=/path/to/k3model"; \
+	 fi
+	@echo "== chat option contract =="; \
+	  for args in "--no-think" "--thinking-effort low" "--chat --thinking-effort medium" "--chat --no-think --thinking-effort low" "--ids 1 --top-k 4"; do \
+	      out=$$(./$(CLI_BIN) fake $$args 2>&1); rc=$$?; \
+	      test $$rc -eq 2 || { echo "  k3 fake $$args returned $$rc, expected 2"; exit 1; }; \
+	      case "$$out" in *--no-think*|*--thinking-effort*|*--top-k*) ;; \
+	          *) echo "  '$$args' was refused, but not because of the thinking flags:"; \
+	             echo "      $$out"; \
+	             echo "  the model dir is 'fake', so the exit code alone would pass on the loader's error"; exit 1;; \
+	      esac; \
+	  done; echo "  5 misuses of thinking/sampling flags refused, each for the right reason"
+	@echo "== chat template =="; \
+	  if [ -f "$(TOK_FILES)/tiktoken.model" ]; then \
+	      ./$(BIN)/test_chat "$(TOK_FILES)"; \
+	  else \
+	      echo "  NOT RUN: no tiktoken.model at $(TOK_FILES)"; \
+	      echo "           the XTML template is checked against the released tokenizer,"; \
+	      echo "           which ships with the checkpoint. Run: make test TOK_FILES=/path/to/k3model"; \
 	  fi
+	@echo "== sampler ==";          ./$(BIN)/test_sampler
+	@echo "== chat prefix record =="; ./$(BIN)/test_prefix
 	@echo "== real dimensions ==";   ./$(BIN)/scale_test
 	@echo "== trunk streaming ==";   ./$(BIN)/test_trunk
 	@echo "== full-model oracle =="; ./$(BIN)/k3_model $(FIXTURES)

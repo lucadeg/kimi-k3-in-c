@@ -24,6 +24,12 @@
  *                   proves the ring correctly recycles slots.
  *   6  FAILED-READ  truncating trunk.bin after open causes a prefetch to fail;
  *                   the slot is never published and bind returns an error.
+ *   7  REFUSAL      corrupt manifests (empty layers, negative geometry, a
+ *                   tensor escaping its run) are refused at open, with
+ *                   nothing left allocated behind them.
+ *   8  RACE         a prefetch that lands before the bind looks is still that
+ *                   bind's read, so the counts do not depend on which thread
+ *                   wins. They did, and §2 failed on CI when the reader won.
  *
  * usage: test_trunk
  *   writes a synthetic 3-layer trunk fixture to a temp directory, then drives
@@ -38,6 +44,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>              /* nanosleep */
 #include <unistd.h>            /* ftruncate */
 
 #include "k3.h"
@@ -345,13 +353,16 @@ static int gen_fixture(const char *dir)
 static int test_one_slot(const char *dir, const K3Cfg *c)
 {
     K3Trunk tr;
-    if (k3_trunk_open(&tr, dir, c, 12288) != 0) {
+    if (k3_trunk_open(&tr, dir, c, 12288, 0) != 0) {
         fprintf(stderr, "TRUNK OPEN FAILED (one-slot)\n"); return 1;
     }
     ck(tr.nslot == 1, "one-slot: ring is 1 slot", "");
     ck(tr.npin == 0,  "one-slot: nothing pinned", "");
 
-    int guard_ok = (tr.io_state == NULL);
+    /* The invariant is that no reader THREAD runs with one slot: it would pread layer
+     * L+1 straight over the slot the caller is computing on. The io state itself may
+     * exist (its mutex serialises slot bookkeeping either way), so test the thread. */
+    int guard_ok = !tr.reader_started;
     ck(guard_ok, "one-slot: io_state is NULL (guard)", "");
     if (!guard_ok) {
         fprintf(stderr, "  *** the one-slot reader guard did not fire. "
@@ -395,7 +406,7 @@ static int test_one_slot(const char *dir, const K3Cfg *c)
 static int test_two_slot(const char *dir, const K3Cfg *c)
 {
     K3Trunk tr;
-    if (k3_trunk_open(&tr, dir, c, 24576) != 0) {
+    if (k3_trunk_open(&tr, dir, c, 24576, 0) != 0) {
         fprintf(stderr, "TRUNK OPEN FAILED (two-slot)\n"); return 1;
     }
     ck(tr.nslot == 2, "two-slot: ring has 2 slots", "");
@@ -414,9 +425,9 @@ static int test_two_slot(const char *dir, const K3Cfg *c)
     /* Prefetch L1 -- starts async read into slot 1 */
     k3_trunk_prefetch(&tr, 1);
 
-    /* Bind L1 -- blocks until reader finishes, publishes slot 1.
-     * The miss was recorded inside trunk_io_wait when it published the slot;
-     * k3_trunk_bind itself records a hit only on the synchronous lookup path. */
+    /* Bind L1 -- blocks until the reader finishes, if it has not already.
+     * Either way this bind is charged one miss for the read; test_landed_first
+     * forces the other interleaving and expects the same counts. */
     K3LayerBind b1; memset(&b1, 0, sizeof b1);
     if (k3_trunk_bind(&tr, c, 1, &b1) != 0) { k3_trunk_close(&tr); return 1; }
     ck(tr.hits == 0 && tr.misses == 2, "two-slot: after bind L1, misses=2", "");
@@ -471,12 +482,58 @@ static int test_two_slot(const char *dir, const K3Cfg *c)
     return 0;
 }
 
+static void nap_ms(int ms)
+{
+#ifdef _WIN32
+    Sleep((DWORD)ms);
+#else
+    struct timespec t;
+    t.tv_sec = ms / 1000;
+    t.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&t, NULL);
+#endif
+}
+
+/* The other interleaving of §2: give the reader time to land L1 before the bind
+ * looks. The bind must still be charged the read, exactly as when it has to wait.
+ * If the reader is slower than the nap, the bind waits instead and the expected
+ * counts are the same, so this cannot fail on a slow machine, only on wrong code. */
+static int test_landed_first(const char *dir, const K3Cfg *c)
+{
+    K3Trunk tr;
+    if (k3_trunk_open(&tr, dir, c, 24576, 0) != 0) {
+        fprintf(stderr, "TRUNK OPEN FAILED (landed-first)\n"); return 1;
+    }
+    ck(tr.nslot == 2, "landed-first: ring has 2 slots", "");
+
+    int dt_ti = 18;
+    K3LayerBind b0; memset(&b0, 0, sizeof b0);
+    if (k3_trunk_bind(&tr, c, 0, &b0) != 0) { k3_trunk_close(&tr); return 1; }
+
+    k3_trunk_prefetch(&tr, 1);
+    nap_ms(200);
+
+    K3LayerBind b1; memset(&b1, 0, sizeof b1);
+    if (k3_trunk_bind(&tr, c, 1, &b1) != 0) { k3_trunk_close(&tr); return 1; }
+    ck(tr.hits == 0 && tr.misses == 2,
+       "landed-first: bind after the read landed, misses=2", "");
+    int dt_ok_1 = check_marker((const unsigned char *)b1.kda.dt_bias, 1, dt_ti, 32);
+    ck(dt_ok_1, "landed-first: bind L1 content correct", "");
+
+    /* Binding the same resident layer again moved no bytes: that one is a hit. */
+    if (k3_trunk_bind(&tr, c, 1, &b1) != 0) { k3_trunk_close(&tr); return 1; }
+    ck(tr.hits == 1 && tr.misses == 2, "landed-first: rebind L1 is a hit", "");
+
+    k3_trunk_close(&tr);
+    return 0;
+}
+
 /* Truncated read: a fresh open, then truncate trunk.bin at layer 2's file_off.
  * Prefetch+bind of L2 must fail and leave no slot published. */
 static int test_truncated(const char *dir, const K3Cfg *c)
 {
     K3Trunk tr;
-    if (k3_trunk_open(&tr, dir, c, 24576) != 0) {
+    if (k3_trunk_open(&tr, dir, c, 24576, 0) != 0) {
         fprintf(stderr, "TRUNK OPEN FAILED (truncated)\n"); return 1;
     }
 
@@ -531,6 +588,42 @@ static int test_truncated(const char *dir, const K3Cfg *c)
     }
 
     k3_trunk_close(&tr);
+    return 0;
+}
+
+/* Corrupt manifests: open must refuse, and the refusal must clean up.
+ * Each trunk.json below fails a different parse-time check while the parsed
+ * tree is still alive, which is exactly the path that used to leak it. */
+static int test_bad_manifest(const char *dir, const K3Cfg *c)
+{
+    static const struct { const char *name; const char *json; } cases[] = {
+        { "empty layers", "{\"layers\":[]}" },
+        { "negative geometry",
+          "{\"layers\":[{\"file_off\":-5,\"nbytes\":64,\"tensors\":{}}]}" },
+        { "tensor escapes run",
+          "{\"layers\":[{\"file_off\":0,\"nbytes\":64,\"tensors\":"
+          "{\"w\":{\"off\":0,\"nbytes\":65,\"dtype\":\"F32\"}}}]}" },
+    };
+    char sub[1024], path[1024];
+    size_t i;
+    /* A directory of its own, so no fixture state is involved at all. */
+    if (snprintf(sub, sizeof sub, "%s/bad", dir) >= (int)sizeof sub) return 1;
+    mkdir(sub, 0755);
+    if (snprintf(path, sizeof path, "%s/trunk.json", sub) >= (int)sizeof path) return 1;
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        FILE *f = fopen(path, "w");
+        K3Trunk tr;
+        int rc;
+        if (!f) { perror("bad-manifest open"); return 1; }
+        if (fputs(cases[i].json, f) < 0) { fclose(f); return 1; }
+        fclose(f);
+        rc = k3_trunk_open(&tr, sub, c, 0, 1);
+        ck(rc == -1, "bad manifest refused", cases[i].name);
+        /* Close must be safe after a refused open. */
+        k3_trunk_close(&tr);
+    }
+    remove(path);
+    rmdir(sub);
     return 0;
 }
 
@@ -615,6 +708,10 @@ int main(void)
     if (test_two_slot(tmpdir, &c) != 0) g_fail++;
     printf("\n");
 
+    /* §2b two-slot, the prefetch lands before the bind looks */
+    if (test_landed_first(tmpdir, &c) != 0) g_fail++;
+    printf("\n");
+
     /* §3 truncated read (fresh open) */
     /* Re-generate the fixture since test_two_slot closed and the file is still intact. */
     if (gen_fixture(tmpdir) != 0) {
@@ -622,6 +719,9 @@ int main(void)
     } else {
         if (test_truncated(tmpdir, &c) != 0) g_fail++;
     }
+
+    /* §4 corrupt manifests (no fixture needed) */
+    if (test_bad_manifest(tmpdir, &c) != 0) g_fail++;
 
     /* Clean up temp files */
     {

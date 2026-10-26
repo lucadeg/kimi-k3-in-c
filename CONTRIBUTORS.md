@@ -1,11 +1,12 @@
 # Contributors
 
 People outside the project who have landed real fixes or features in this codebase.
-GitHub's own contributor graph misses a few of these: a handful of pull requests hit a
-merge conflict against other work landing the same day and had to be rebased by hand
-through a new pull request to get a clean CI run, which is why their code shows up in
-the history under a different name than the one that wrote it. This file is the correct
-record.
+
+GitHub's contributor list is built from commit authors. Most of the pull requests below
+were rebased and squash-merged by hand to clear conflicts with other work landing at the
+same time, and those commits went in under the maintainer's name, so that list misses
+most of the people here. This file is the correct record. Pull requests merged after
+v1.1.0 are committed under their author's name.
 
 - **[douglasmun](https://github.com/douglasmun)** -- got the engine building and
   passing the test suite on macOS / Apple Silicon.
@@ -51,6 +52,38 @@ record.
   resumed from a byte-exact state.
 - **[Avicennasis](https://github.com/Avicennasis)** -- hardened `--stop-id` parsing
   against silent typos, added its `stopped_at` line to `k3_run.json` and a weightless
-  contract gate, and kept `k3_run.json` valid when `--gen 0` generates nothing.
+  contract gate, and kept `k3_run.json` valid when `--gen 0` generates nothing; carried
+  the XTML chat REPL forward with the tokenizer bundle dropped, `--no-think` and
+  `--thinking-effort`, and the Windows portability fixes it needed (`getline`, `fsync`,
+  and a `rename` that actually replaces an existing file); found and fixed the missing
+  OpenMP link on the CMake Apple/libomp path; carried Deobot2's trunk pinning and
+  prefetcher work through review, with the synthetic trunk test adapted to it; Ctrl-C
+  that stops at a safe point and still writes everything; a
+  checksummed state file published by atomic rename; chat turns that reuse the previous
+  turn's state behind a bit-exact gate; available memory that is real on macOS and
+  capped by commit headroom on Windows; missing-shard diagnostics that name the file; and
+  safetensors span checks validated against every shard of the released checkpoint.
+- **[Deobot2](https://github.com/Deobot2)** -- largest-first trunk pinning, the
+  `--trunk-ring` flag, and two prefetcher re-read bugs found by instrumentation rather
+  than by inspection.
+- **[Blake Evans](https://github.com/BlakeEvans22)** -- the original K3 XTML chat core
+  and REPL, reproducing the checkpoint's own chat format so the engine answers a
+  chat-shaped prompt instead of completing it.
+- **[FermiHart](https://github.com/FermiHart)** -- a set of parser hardening fixes
+  across the safetensors reader, the trunk reader, and the vendored JSON library:
+  integer-overflow saturation, offset and size checks that run before the arithmetic
+  they protect rather than after, a library that no longer calls `exit()` on an
+  allocation failure, and a new weightless fault-injection test; a batched MoE prefill
+  path that read uninitialized memory on an expert load failure instead of contributing
+  zero, exactly as the per-token path already does; and CLI refusals for a malformed
+  `--ids` list, an out-of-range `--layers`, and a lost `--out` file; a strict JSON parser
+  that refuses truncated input instead of reading past it; a trunk.json leak on the
+  refusal path; sampler tests that run without the tokenizer; and `--top-k` for chat.
+- **[santhoshsathish94](https://github.com/santhoshsathish94)** -- found that
+  `--preset auto` could never start on the machines it was written for and fixed it,
+  with the measurements that made the thread-count default change a clear call; split
+  expert reads so a batch no longer waits on its slowest read.
+- **[Irfanwani](https://github.com/Irfanwani)** -- the `--layers N` download mode, so the
+  pipeline can be exercised on a disk too small for the checkpoint.
 
 Thank you, all of you.

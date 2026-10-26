@@ -5,8 +5,63 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The trunk report counted a prefetched layer as a hit** whenever its read finished
+  before the walk bound it. On a fully streamed run of the tiny checkpoint, every one of
+  the 156 layer binds was a real read ("reads 156 against 156 the walk owes"), and the
+  line above it still said `hits 144 (92.3%), reads 12`. A layer the reader fetched
+  ahead is now charged as a read to the bind that reaches it, whichever thread gets there
+  first, so the counts no longer depend on timing and the hit rate again tracks the
+  pinned fraction. Counting only: output is unchanged. This was also the cause of an
+  intermittent `test_trunk` failure on CI, which now tests both interleavings.
+
+## [1.1.0] - 2026-10-02
+
+Chat, native Windows builds alongside Linux and macOS, an 8 GB class mode for the
+complete model, NEON kernels for ARM, and a round of hardening on everything that parses
+checkpoint files. Output is unchanged wherever it was already defined: every oracle gate
+still matches the reference exactly.
+
+One compatibility note: `--save-state` files move to version 2, with a checksum. A
+version 1 file is refused with a clear message rather than read; regenerate it with
+`--gen 0 --incremental --save-state`.
+
 ### Added
 
+- **`--preset ultra` and `--ultra-low-memory`**: the complete 93 layer model inside an
+  8 GB class memory budget, by streaming exact embedding rows and bounded lm_head chunks
+  and reusing one recurrent state slot. Same weights, same top-16 routing, same kernels.
+  Verified with four full runs on a Jetson Orin Nano Super against the released
+  checkpoint, identical ids and identical logits each time. Slow, by design.
+- **NEON kernels on aarch64** for the bf16, MXFP4 and q8 matmuls, so Apple Silicon and
+  ARM servers are no longer scalar only. Bit identical to the scalar path.
+- **`--chat`**: a terminal REPL implementing K3's official XTML chat format, message
+  envelopes, the `thinking_effort` system preamble, and `reasoning_content` on prior
+  assistant turns, rendered exactly as the checkpoint's own encoder does, with JSONL
+  history and a parser for one assistant completion. Greedy by default; `--temperature`,
+  `--top-p`, and `--seed` opt in to sampling. `--no-think` and `--thinking-effort low`,
+  `high`, or `max` skip or size the think channel, which on a short answer is most of
+  the cost. Without a chat template the engine had completed a chat-shaped prompt as if
+  it were mid document rather than answering it.
+- **`--trunk-ring N`**: the streaming trunk's prefetch queue depth is now a flag
+  (default 2) instead of fixed at two slots.
+- **Ctrl-C stops at a safe point.** The first Ctrl-C lets the step in flight finish,
+  then writes the state file, the `--out` JSON and the reports exactly as a finished run
+  would, and exits 5. A second Ctrl-C kills. Before, SIGINT discarded everything.
+- **Chat reuses the previous turn's state.** When the next turn's rendered prompt begins
+  with exactly the ids the carried state was built from, only the new tail is prefilled.
+  GATE 3b in the oracle requires that to be bit identical to a full prefill: logits, every
+  KV row, and the KDA state.
+- **`--top-k K`** for chat sampling, on the existing sampler. Off by default.
+- **`--threads N`**, and a default of the physical core count on Linux instead of one
+  thread per logical CPU, which measured about 23% slower per token on a 16 core SMT part.
+- **`download-model.sh <dest> --layers N`** fetches only the shards a `--layers N` run
+  needs, resolved from the Hub's own index, with a banner saying the result is not the
+  model.
+- **A missing tensor names the missing file.** The shard filenames declare the shard
+  count, so a partial download now says which file is absent instead of only which
+  tensor.
 - **`--stop-id N`** (repeatable, up to 8): generation halts as soon as the model emits
   a listed token id. Off by default, so `--gen N` still means exactly N tokens for
   every benchmark and oracle gate. The stop id stays in the sequence, so `--save-state`
@@ -36,6 +91,11 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The MXFP4 expert matmul is about 1.6x faster**, decoding nibbles in register, plus
+  another 1.56x from a flat-row AVX2 path when the group is a multiple of 16. Bit
+  identical, checked against the kernel hashes before and after.
+- **Expert reads are split into 1 MiB chunks**, so a batch of reads no longer waits on its
+  slowest expert. Output is unchanged.
 - **Trunk layers are read in parallel chunks.** `load_run()` streamed each layer with
   one sequential `pread` loop, so the device saw queue depth 1. It now splits the layer
   into 64 MiB chunks (a multiple of `K3_TRUNK_ALIGN`, so every chunk stays aligned for
@@ -43,9 +103,58 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   expert path already does. Without OpenMP the loop still runs one chunk at a time. A
   short read in any chunk fails the whole layer, as before, and the decoded output and
   `trunk_bytes_read` are unchanged.
+- **Trunk layers are pinned largest-first instead of as a prefix.** Prefix pinning
+  always pinned the 2.34 GB dense layer first, which sized the streaming ring's slot to
+  it even after it stopped needing the ring at all. `K3_PIN_PREFIX=1` restores the old
+  order on the same binary.
 
 ### Fixed
 
+- **macOS could not read the embedding table or a packed trunk layer.** Darwin's pread
+  refuses a single request of 2 GiB or more, and both exceed it; reads are now chunked.
+  The download script also works on macOS and with current huggingface_hub releases.
+- **CMake on Apple Silicon and on macOS.** The ARM64 build was handed x86 flags, and the
+  macOS build silently came out single threaded because CMake could not find Homebrew's
+  libomp. Both are fixed.
+- **`k3_matmul_mxfp4` now enforces its documented preconditions.** An odd input width or a
+  group above 64 aborts with a message instead of writing past the caller's buffer.
+- **`--preset auto` refused itself on large machines.** It planned to 98% of available
+  memory while admission allowed 95%, so from about 100 GB of RAM upward the recommended
+  preset could never start, and the refusal printed a negative shortfall. One constant
+  now drives both.
+- **On macOS the available memory read as 0**, which silently switched off both memory
+  refusals. Darwin and Windows now have their own probes, and Windows also caps by the
+  remaining commit limit.
+- **A state file could be wrong without the loader noticing.** One flipped byte restored
+  cleanly, and a save that failed partway destroyed the previous good file. The payload
+  is now checksummed and the file published by an atomic rename. State files move to
+  version 2; a version 1 file is refused rather than guessed at.
+- **Safetensors headers whose tensor spans overlap or leave a gap** were read without
+  complaint, shifting every tensor after them. They are refused now, the same rule the
+  reference loader applies; all 96 shards of the released checkpoint pass it.
+- **The JSON parser read past the end of a truncated string** and accepted incomplete
+  documents. Both are refusals now. Every JSON file the engine reads from the released
+  checkpoint parses to the same tree as before.
+- **A refused trunk.json leaked its whole parse tree**, and `--ids` values past the int
+  range wrapped to a real token id.
+- **Hostile or corrupt safetensors, trunk, and config input could reach undefined
+  behavior instead of a refusal.** Integer overflow in shape and offset arithmetic
+  (a hostile shape or `data_offsets` pair near `INT64_MAX` could wrap and defeat the
+  bounds checks meant to catch it), an out-of-bounds read on an empty trunk layer
+  array, a batched MoE prefill path that summed uninitialized memory when an expert
+  failed to load instead of contributing zero as the per-token path already does, and
+  unchecked allocations in the JSON parser and the shard directory listing that could
+  crash through a null pointer rather than fail cleanly. A new weightless test,
+  `test_st_faults`, builds mutated copies of the fixture shards and asserts each
+  failure mode is refused loudly. No input that was already valid changes.
+- **`--ids` with a non-numeric piece silently became token id 0** instead of being
+  refused, because a failed `strtol` call and a real id of 0 are indistinguishable
+  without checking where parsing stopped.
+- **`--layers 0` or a value past the real layer count silently ran the complete
+  model**, as if `--layers` had not been given, instead of being refused as the typo
+  it almost always is.
+- **An `--out` path that could not be written still exited 0**, indistinguishable from
+  a run whose result was actually saved. It now exits 3.
 - **`k3_run.json` was not valid JSON after a run that generated nothing.** With
   `nout == 0` the `seconds_per_token` field computed `t_total / nout` and emitted a
   bare `inf`, so a harness driving `--gen 0 --save-state` failed on the one run it
@@ -159,6 +268,7 @@ First public release.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md).
 
-[Unreleased]: https://github.com/FareedKhan-dev/kimi-k3-in-c/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/FareedKhan-dev/kimi-k3-in-c/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/FareedKhan-dev/kimi-k3-in-c/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/FareedKhan-dev/kimi-k3-in-c/compare/v0.1.0...v1.0.0
 [0.1.0]: https://github.com/FareedKhan-dev/kimi-k3-in-c/releases/tag/v0.1.0
